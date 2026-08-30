@@ -1,0 +1,74 @@
+{
+  "name": "obsidian-media-player",
+  "version": "0.1.0",
+  "description": "Plug-and-play media toolkit for React Native: Video, Audio, and a full-featured Music player with playlists, background playback, lock-screen controls, HLS/DASH streaming and caching.",
+  "main": "lib/commonjs/index.js",
+  "module": "lib/module/index.js",
+  "types": "lib/typescript/index.d.ts",
+  "react-native": "src/index.ts",
+  "files": [
+    "src",
+    "lib",
+    "ios",
+    "android",
+    "plugin",
+    "player.png",
+    "react-native.config.js",
+    "!.idea",
+    "!**/__tests__",
+    "!**/__mocks__"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" --max-warnings=0",
+    "prepare": "bob build",
+    "prepack": "bob build",
+    "codegen": "react-native codegen --platform ios --project-root ./example/ios || true",
+    "test": "jest"
+  },
+  "keywords": [
+    "react-native",
+    "video",
+    "audio",
+    "music",
+    "player",
+    "media",
+    "hls",
+    "dash",
+    "playlist",
+    "background-audio"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/obsidian/obsidian-media-player.git"
+  },
+  "license": "MIT",
+  "author": "Obsidian",
+  "peerDependencies": {
+    "react": "*",
+    "react-native": ">=0.73.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-native": "^0.73.0",
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "react": "18.2.0",
+    "react-native": "0.73.6",
+    "react-native-builder-bob": "^0.30.0",
+    "typescript": "^5.3.0"
+  },
+  "react-native-builder-bob": {
+    "source": "src",
+    "output": "lib",
+    "targets": ["commonjs", "module", "typescript"]
+  },
+  "codegenConfig": {
+    "name": "ObsidianMediaPlayerSpec",
+    "type": "components",
+    "jsSrcsDir": "src/specs",
+    "android": {
+      "javaPackageName": "com.obsidianmediaplayer"
+    }
+  }
+}

@@ -1,0 +1,11 @@
+node_modules/
+lib/
+*.log
+.DS_Store
+.idea/
+.vscode/
+coverage/
+dist/
+build/
+*.tgz
+.example/
