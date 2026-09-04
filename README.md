@@ -227,6 +227,53 @@ Android builds a per-source `Hls/Dash/ProgressiveMediaSource` with `DefaultHttpD
 
 - `Video` / `Audio` on web resolve to `src/components/Video.web.tsx` / `Audio.web.tsx` (HTML5). No native linking required.
 
+### Functions — complete export map (`src/index.ts`)
+
+All public exports; native calls go via `src/native/*` compat layer (`TurboModuleRegistry.getEnforcing` with `NativeModules` fallback).
+
+#### Components & handles
+
+| Export | Source | What it does |
+|---|---|---|
+| `Video` + `VideoHandle` | `src/components/Video.tsx` → `src/native/VideoNative.ts` (`ObsidianVideo` Fabric view, `src/specs/NativeObsidianVideo.ts`) | Renders native surface. Handle: `play/pause/stop/seek/setRate/setVolume/setMuted/setResizeMode/getState`. Events: `onStateChange/onProgress/onBuffering/onEnded/onError` |
+| `Audio` + `AudioHandle` | `src/components/Audio.tsx` → `NativeObsidianAudio` | Headless. Same handle without `setResizeMode` |
+| `MusicPlayer` + `MusicPlayerHandle` | `src/components/MusicPlayer.tsx` → `NativeObsidianMusicPlayer` | Headless queue player. Handle mirrors `useMusicPlayer` controls |
+
+#### Hooks
+
+| Export | Signature | Notes |
+|---|---|---|
+| `useVideoPlayer()` | `() => { ref, controls: VideoHandle, state: PlaybackState }` | Wraps `<Video>` ref + state |
+| `useAudioPlayer(initialSource?)` | `() => { state, controls: AudioControls }` | `controls: load(source)/play/pause/stop/seek/setRate/setVolume/setMuted/setLoop/getState` (`src/hooks/useAudioPlayer.ts`) |
+| `useMusicPlayer(initialTracks?)` | `() => { state, queue: QueueSnapshot, controls: MusicControls }` | `controls: setQueue/addTracks/removeTrack/skipTo/next/previous/play/pause/stop/seek/setRate/setVolume/setMuted/setRepeatMode/setShuffle/setRemoteControls/setBackgroundEnabled/getQueue/getState` (`src/hooks/useMusicPlayer.ts`) |
+| `usePlaybackState(state)` | `(PlaybackState) => PlaybackDerived` | Derived: `isPlaying/isPaused/isBuffering/isLoading/isEnded/hasError/progress(0..1)` (`src/hooks/usePlaybackState.ts`) |
+| `useRemoteControls(cb)` | `( (cmd: RemoteCommand, payload?) => void ) => void` | Subscribes to `remote-play/pause/next/previous/seek/duck` (`src/hooks/useRemoteControls.ts`) |
+| `useMedia()` + `MediaProvider` | `src/context/MediaProvider.tsx` | App-wide provider: `{ state, queue, controls, next/previous/toggle, set* }` — wraps `useMusicPlayer` via context |
+
+#### Core / utilities
+
+| Export | Source | Functions |
+|---|---|---|
+| `PlaylistManager` | `src/core/PlaylistManager.ts` | `buildOrder(count, shuffle)` / `createQueue(tracks)` / `currentIndex(queue)` / `currentTrack(queue)` / `nextCursor(queue)` / `previousCursor(queue)` / `reshuffle(queue)` / `setRepeat(queue, mode)` — pure helpers tested in `__tests__/PlaylistManager.test.ts` |
+| `CastManager` / `castManager` | `src/core/CastManager.ts` | `discover(): Promise<CastDevice[]>` / `connect(device)` / `disconnect()` / `onDeviceChange(cb)` / `currentDevice` — **stub** (see Roadmap) |
+| `DownloadManager` | `src/core/DownloadManager.ts` | `download(id, source)` / `removeDownload(id)` / `getDownloads(): Promise<DownloadInfo[]>` / `clearCache()` / `getCacheSize(): Promise<number>` — delegates to `CacheNative` or `CacheStorage('obsidian-media')` on web |
+| `Events` | `src/core/Events.ts` | Internal event bus for `MediaEvent` (`state/progress/buffering/ended/error/remote-*`) |
+| `media` utils | `src/utils/media.ts` | `sourceToJson(source)`, `parseState(json)`, `INITIAL_STATE` |
+| `platform` utils | `src/utils/platform.ts` | `isIOS/isAndroid/isWeb` helpers |
+
+#### Low-level native access
+
+| Export | Spec | Methods |
+|---|---|---|
+| `AudioNative` | `src/specs/NativeObsidianAudio.ts` (`ObsidianAudio`) | `load/ play/ pause/ stop/ seek/ setRate/ setVolume/ setMuted/ setLoop/ getCurrentState(): Promise<string(JSON PlaybackState)>` |
+| `MusicPlayerNative` | `src/specs/NativeObsidianMusicPlayer.ts` (`ObsidianMusicPlayer`) | `setQueue/addTracks/removeTrack/skipTo/next/previous/play/pause/stop/seek/setRate/setVolume/setMuted/setRepeatMode/setShuffle/setRemoteControls/setBackgroundEnabled/getCurrentQueue/getCurrentState` |
+| `CacheNative` | `src/specs/NativeObsidianCache.ts` (`ObsidianCache`) | `download/removeDownload/getDownloads/clearCache/getCacheSize` (all `Promise<string(JSON)>`) |
+| `ObsidianVideoNative` + `Commands` | `src/specs/NativeObsidianVideo.ts` (`ObsidianVideo`) | View props `sourceJson/paused/muted/volume/rate/resizeMode/repeat` + commands `play/pause/stop/seek/setRate/setVolume/setMuted/setResizeMode` |
+
+#### Types (`src/types.ts`)
+
+`MediaSource` / `MediaSourceType` / `Track` / `PlaybackState` / `PlaybackStatus` / `RepeatMode` / `ResizeMode` / `MediaEvent` / `MediaEventType` / `MediaEventHandler` / `RemoteControlOptions` / `CastDevice` / `VideoProps` / `AudioProps` / `MusicPlayerProps`
+
 ## Architecture
 
 ```
@@ -257,6 +304,25 @@ plugin/               # Expo config plugin (withObsidian) — UIBackgroundModes 
 example/              # bare RN demo (Video / Audio / Music)
 __tests__/            # PlaylistManager.test.ts
 ```
+
+## Roadmap — DON'Ts as Future Implements
+
+> **Offline batch — done.** Items 4–6 were fixed first for offline players (AVPlayer `ios/Cache/ObsidianCacheModule.swift` + Media3 ExoPlayer `android/core/ExoPlayerProvider.kt` + `android/cache/ObsidianCacheModule.kt`). Remaining DON'Ts below are still open.
+
+These are intentional gaps / `pkg` DON'Ts from the audit; tracked here so consumers know what **not** to rely on yet. PRs welcome — each item lists the file to touch.
+
+| # | Gap (DON'T rely on yet) | Current behavior | Future implement | Files |
+|---|---|---|---|---|
+| 1 | **Casting (Chromecast / AirPlay)** | `src/core/CastManager.ts:16` `discover()` returns `[]`; `connect()` only sets `active` — no SDK | Wire Google Cast SDK (Android) + `AVRoutePickerView`/`GCKDiscoveryManager` (iOS) behind stable `CastManager` API (`discover/connect/disconnect/onDeviceChange`). Keep `CastDevice` `src/types.ts:112` | `src/core/CastManager.ts`, `android/*`, `ios/*`, `src/types.ts:112` |
+| 2 | **DRM — Widevine / FairPlay** | `MediaSource.drmLicenseUri` `src/types.ts:19` is passthrough; `android/core/ExoPlayerProvider.kt:79` `// DRM would be wired here` — commented out | Android: `DefaultDrmSessionManager` + `HttpMediaDrmCallback(drmLicenseUri)` in `buildMediaSource()`; iOS: `AVContentKeySession` delegate in `ObsidianVideoPlayer`/`ObsidianCacheModule` | `android/core/ExoPlayerProvider.kt:79`, `ios/Video/ObsidianVideoPlayer.swift`, `ios/Cache/ObsidianCacheModule.swift:35`, `src/types.ts:19` |
+| 3 | **SmoothStreaming (`type: 'smooth'`)** | `src/types.ts:9` lists `smooth` but `ExoPlayerProvider.kt:82` `when(type)` only handles `hls/dash/else→Progressive` | Add `SsMediaSource.Factory` (`media3-exoplayer-smoothstreaming`) or remove `smooth` from `MediaSourceType` | `android/core/ExoPlayerProvider.kt:82`, `android/build.gradle:25`, `src/types.ts:9` |
+| 4 | **iOS offline HLS downloads** ✅ *fixed* | Now file-based cache `ApplicationSupport/obsidian-media-cache/<id>.<ext>` + `UserDefaults` index, `URLSession.downloadTask` for progressive, `AVAssetDownloadURLSession` for HLS when entitlement present, `getDownloads`/`getCacheSize`/`clearCache`/`removeDownload` implemented | Entitlement-free fallback done; remaining: persist `AVAssetDownloadTask` across reboots | `ios/Cache/ObsidianCacheModule.swift:8,38,47,58`, `src/core/DownloadManager.ts:24` |
+| 5 | **Android per-track headers/type/drm** ✅ *fixed* | `Track` now carries `type/drmLicenseUri/cacheable` `ObsidianMusicPlayerModule.kt:27,94` → `buildMediaSource(t.type, t.cacheable, t.drmLicenseUri)` `ObsidianMusicPlayerModule.kt:114` | Full Widevine `DefaultDrmSessionManager` still roadmap #2 | `android/music/ObsidianMusicPlayerModule.kt:27,94,114`, `android/core/ExoPlayerProvider.kt:54` |
+| 6 | **Cache write path** ✅ *fixed* | Removed `setCacheWriteDataSinkFactory(null)` `ExoPlayerProvider.kt:43`; `CacheDataSource` now writes via default sink; added `prefetchToCache()` `ExoPlayerProvider.kt:37` for offline pre-warm + `ObsidianCacheModule` background prefetch + `SharedPreferences` index | Verify write throughput on low storage | `android/core/ExoPlayerProvider.kt:37,43` |
+| 7 | **Web background / MediaSession / headers** | `<video>/<audio>` fallback `src/components/Video.web.tsx`/`Audio.web.tsx` — `headers` can't be set on `src`, no `MediaSession`/`background` | Web: `fetch`→`blob:` URL for header auth; `navigator.mediaSession` for lock-screen; document `CacheStorage('obsidian-media')` CORS limits | `src/components/Video.web.tsx`, `src/components/Audio.web.tsx`, `src/core/DownloadManager.ts:29` |
+| 8 | **Package publishing** | `.npmignore:2` lists `lib/` contradicting `files:lib` `package.json:10`; `1.7MB player.png` dominates tarball; no `exports`/`sideEffects:false`; `codegenConfig.type:"components"` misses TurboModules; loose `peerDeps react:*` | Clean `.npmignore`, exclude `player.png` or host via CDN, add `exports: {".": {types, import, require}}` + `sideEffects:false`, change `codegenConfig` to `type:"all"` or split, pin `react>=18, react-native>=0.73` | `.npmignore:2`, `package.json:9,48,66`, `player.png`, `ios/ObsidianMediaPlayer.podspec:23` |
+| 9 | **Video `getState()` staleness** | `src/components/Video.tsx:64` `getState:()=>state` captures closure — can lag native | Sync via `getCurrentState()` native call or `useRef` for latest state | `src/components/Video.tsx:42,64` |
+| 10 | **Expo plugin peer** | `plugin/index.js:1` requires `@expo/config-plugins` at runtime without `peerDeps` | Move to `peerDependenciesMeta.optional` or lazy-require with helpful error | `plugin/index.js:1`, `plugin/package.json`, `package.json:47` |
 
 New Architecture is enabled in the app with `RCT_NEW_ARCH_ENABLED=1` (iOS `pod install` reads it; Android reads `newArchEnabled` from `gradle.properties`). When disabled the same native classes are used via the bridge. `lib/` is generated by `react-native-builder-bob` (`commonjs`/`module`/`typescript`).
 

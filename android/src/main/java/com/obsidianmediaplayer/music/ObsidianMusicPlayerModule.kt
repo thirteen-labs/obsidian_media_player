@@ -23,7 +23,16 @@ class ObsidianMusicPlayerModule(private val ctx: ReactApplicationContext) : Reac
   private val player: ExoPlayer by lazy { ExoPlayerProvider.buildPlayer(ctx) }
   private var mediaSession: MediaSession? = null
 
-  private data class Track(val id: String, val uri: String, val headers: Map<String, String>, val title: String?, val artist: String?)
+  private data class Track(
+    val id: String,
+    val uri: String,
+    val headers: Map<String, String>,
+    val title: String?,
+    val artist: String?,
+    val type: String?,
+    val drmLicenseUri: String?,
+    val cacheable: Boolean
+  )
 
   private var tracks: MutableList<Track> = mutableListOf()
   private var order: MutableList<Int> = mutableListOf()
@@ -99,7 +108,10 @@ class ObsidianMusicPlayerModule(private val ctx: ReactApplicationContext) : Reac
       val headers = src.optJSONObject("headers")?.let { jo ->
         buildMap { jo.keys().forEach { k -> put(k, jo.getString(k)) } }
       } ?: emptyMap()
-      out += Track(o.getString("id"), src.getString("uri"), headers, o.optString("title", null), o.optString("artist", null))
+      val type = src.optString("type", null)?.takeIf { it.isNotEmpty() }
+      val drm = src.optString("drmLicenseUri", null)?.takeIf { it.isNotEmpty() }
+      val cacheable = if (src.has("cacheable")) src.optBoolean("cacheable", true) else true
+      out += Track(o.getString("id"), src.getString("uri"), headers, o.optString("title", null), o.optString("artist", null), type, drm, cacheable)
     }
     return out
   }
@@ -109,9 +121,7 @@ class ObsidianMusicPlayerModule(private val ctx: ReactApplicationContext) : Reac
     val idx = order[cursor]
     val t = tracks[idx]
     val item = MediaItem.Builder().setUri(t.uri).setMediaId(t.id).build()
-    // Per-track headers/type/drm are on the serialized Track; decode from stored Track or fallback.
-    // For this scaffold tracks carry uri+headers already.
-    val source = ExoPlayerProvider.buildMediaSource(ctx, item, t.headers, null, true, null)
+    val source = ExoPlayerProvider.buildMediaSource(ctx, item, t.headers, t.type, t.cacheable, t.drmLicenseUri)
     player.setMediaSource(source); player.prepare()
     lastState["status"] = "loading"; emitState()
     send("onTrackChange", Arguments.createMap().apply { putInt("index", idx); putString("id", t.id) })
