@@ -28,6 +28,18 @@ class ObsidianVideoView(context: Context) : FrameLayout(context) {
     "buffered" to 0.0, "inBackground" to false
   )
 
+  private val progressRunnable = object : Runnable {
+    override fun run() {
+      val pos = player.currentPosition / 1000.0
+      val dur = if (player.duration > 0) player.duration / 1000.0 else 0.0
+      lastState["position"] = pos
+      lastState["duration"] = dur
+      lastState["buffered"] = player.bufferedPosition / 1000.0
+      if (player.isPlaying) onProgress?.invoke(pos, dur)
+      postDelayed(this, 250)
+    }
+  }
+
   init {
     addView(textureView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
     player.addListener(object : Player.Listener {
@@ -56,27 +68,15 @@ class ObsidianVideoView(context: Context) : FrameLayout(context) {
     post(progressRunnable)
   }
 
-  private val progressRunnable = object : Runnable {
-    override fun run() {
-      val pos = player.currentPosition / 1000.0
-      val dur = if (player.duration > 0) player.duration / 1000.0 else 0.0
-      lastState["position"] = pos
-      lastState["duration"] = dur
-      lastState["buffered"] = player.bufferedPosition / 1000.0
-      if (player.isPlaying) onProgress?.invoke(pos, dur)
-      postDelayed(this, 250)
-    }
-  }
-
   fun load(sourceJson: String) {
     val obj = JSONObject(sourceJson)
     val uri = obj.getString("uri")
     val headers = obj.optJSONObject("headers")?.let { jo ->
       buildMap { jo.keys().forEach { k -> put(k, jo.getString(k)) } }
     } ?: emptyMap()
-    val type = obj.optString("type", null)?.takeIf { it.isNotEmpty() }
+    val type = obj.optString("type").takeIf { it.isNotEmpty() }
     val cacheable = obj.optBoolean("cacheable", true)
-    val drmLicenseUri = obj.optString("drmLicenseUri", null)?.takeIf { it.isNotEmpty() }
+    val drmLicenseUri = obj.optString("drmLicenseUri").takeIf { it.isNotEmpty() }
     val mediaItem = MediaItem.Builder().setUri(uri).build()
     val source = ExoPlayerProvider.buildMediaSource(context, mediaItem, headers, type, cacheable, drmLicenseUri)
     player.setMediaSource(source)

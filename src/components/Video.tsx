@@ -4,8 +4,9 @@ import React, {
   useRef,
   useState,
   useCallback,
+  type Ref,
 } from 'react';
-import ObsidianVideo, { Commands } from '../native/VideoNative';
+import ObsidianVideo, { VideoCommands } from '../native/VideoNative';
 import { INITIAL_STATE, parseState, sourceToJson } from '../utils/media';
 import type { PlaybackState, VideoProps } from '../types';
 
@@ -38,7 +39,7 @@ export const Video = forwardRef<VideoHandle, VideoProps>(function Video(
   },
   ref
 ) {
-  const innerRef = useRef<any>(null);
+  const innerRef = useRef<VideoHandle | null>(null);
   const [state, setState] = useState<PlaybackState>(INITIAL_STATE);
 
   const emit = useCallback(
@@ -53,14 +54,14 @@ export const Video = forwardRef<VideoHandle, VideoProps>(function Video(
   useImperativeHandle(
     ref,
     (): VideoHandle => ({
-      play: () => Commands.play(innerRef.current),
-      pause: () => Commands.pause(innerRef.current),
-      stop: () => Commands.stop(innerRef.current),
-      seek: (seconds) => Commands.seek(innerRef.current, seconds),
-      setRate: (r) => Commands.setRate(innerRef.current, r),
-      setVolume: (v) => Commands.setVolume(innerRef.current, v),
-      setMuted: (m) => Commands.setMuted(innerRef.current, m),
-      setResizeMode: (mode) => Commands.setResizeMode(innerRef.current, mode),
+      play: () => VideoCommands.play(innerRef.current),
+      pause: () => VideoCommands.pause(innerRef.current),
+      stop: () => VideoCommands.stop(innerRef.current),
+      seek: (seconds) => VideoCommands.seek(innerRef.current, seconds),
+      setRate: (r) => VideoCommands.setRate(innerRef.current, r),
+      setVolume: (v) => VideoCommands.setVolume(innerRef.current, v),
+      setMuted: (m) => VideoCommands.setMuted(innerRef.current, m),
+      setResizeMode: (mode) => VideoCommands.setResizeMode(innerRef.current, mode),
       getState: () => state,
     }),
     [state]
@@ -68,7 +69,6 @@ export const Video = forwardRef<VideoHandle, VideoProps>(function Video(
 
   return (
     <ObsidianVideo
-      ref={innerRef}
       style={[{ width: '100%', height: 200 }, style]}
       sourceJson={sourceToJson(source)}
       paused={paused}
@@ -84,7 +84,7 @@ export const Video = forwardRef<VideoHandle, VideoProps>(function Video(
           onStateChange?.(parsed);
           emit('state', undefined, parsed);
         }
-        if (autoPlay && parsed?.status === 'ready') Commands.play(innerRef.current);
+        if (autoPlay && parsed?.status === 'ready') VideoCommands.play(innerRef.current);
       }}
       onProgress={(e: any) => {
         const ne = e?.nativeEvent ?? e;

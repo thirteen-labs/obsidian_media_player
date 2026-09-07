@@ -34,7 +34,7 @@ object ExoPlayerProvider {
     return created
   }
 
-  fun buildDataSourceFactory(context: Context, cacheable: Boolean): CacheDataSource.Factory {
+  fun buildDataSourceFactory(context: Context, cacheable: Boolean): androidx.media3.datasource.DataSource.Factory {
     val upstream = DefaultDataSource.Factory(context)
     return if (cacheable) {
       CacheDataSource.Factory()
@@ -42,8 +42,8 @@ object ExoPlayerProvider {
         .setUpstreamDataSourceFactory(upstream)
         .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
     } else {
-      CacheDataSource.Factory().setCache(null).setUpstreamDataSourceFactory(upstream)
-    } as CacheDataSource.Factory
+      upstream
+    }
   }
 
   /**
@@ -94,13 +94,12 @@ object ExoPlayerProvider {
 
     val upstreamFactory = httpFactory ?: DefaultDataSource.Factory(context)
 
-    val cacheFactory = if (cacheable) {
+    val cacheFactory: androidx.media3.datasource.DataSource.Factory = if (cacheable) {
       CacheDataSource.Factory().setCache(getCache(context))
         .setUpstreamDataSourceFactory(upstreamFactory)
         .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
     } else {
-      CacheDataSource.Factory().setCache(null)
-        .setUpstreamDataSourceFactory(upstreamFactory)
+      upstreamFactory
     }
 
     // DRM hook: when drmLicenseUri is present, a DefaultDrmSessionManager

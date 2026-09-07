@@ -9,7 +9,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class ObsidianCacheModule(private val ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) {
-  override fun getName() = "ObsidianCache"
+  override fun getName() = NAME
+
+  companion object {
+    const val NAME = "ObsidianCache"
+  }
 
   companion object {
     private const val PREFS = "obsidian_downloads"
@@ -45,7 +49,7 @@ class ObsidianCacheModule(private val ctx: ReactApplicationContext) : ReactConte
       val headers = obj.optJSONObject("headers")?.let { jo ->
         buildMap { jo.keys().forEach { k -> put(k, jo.getString(k)) } }
       } ?: emptyMap()
-      val type = obj.optString("type", null)?.takeIf { it.isNotEmpty() }
+      val type = obj.optString("type").takeIf { it.isNotEmpty() }
       val cacheable = obj.optBoolean("cacheable", true)
 
       // Persist to index immediately as "downloading" so getDownloads is useful

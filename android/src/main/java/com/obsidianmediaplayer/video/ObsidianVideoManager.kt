@@ -55,7 +55,7 @@ class ObsidianVideoManager : SimpleViewManager<ObsidianVideoView>() {
       .put("onEnded", MapBuilder.of("registrationName", "onEnded"))
       .put("onError", MapBuilder.of("registrationName", "onError"))
       .put("onBuffering", MapBuilder.of("registrationName", "onBuffering"))
-      .build()
+      .build() as MutableMap<String, Any>
 
   override fun getCommandsMap(): MutableMap<String, Int> =
     mutableMapOf(

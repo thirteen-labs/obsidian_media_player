@@ -293,7 +293,8 @@ ios/
   Music/              # ObsidianRemoteControls + ObsidianMusicPlayerModule
   Cache/              # ObsidianCacheModule (AVAssetDownloadTask hook + URLCache)
 android/
-  build.gradle / AndroidManifest.xml
+  build.gradle / CMakeLists.txt / AndroidManifest.xml
+  src/main/jni/OnLoad.cpp # JNI entry point; links react_codegen_ObsidianMediaPlayerSpec when Codegen runs
   core/               # ExoPlayerProvider (shared cache + buildMediaSource with headers/type/DRM)
   video/              # ObsidianVideoView + Manager
   audio/              # ObsidianAudioModule
@@ -304,6 +305,20 @@ plugin/               # Expo config plugin (withObsidian) — UIBackgroundModes 
 example/              # bare RN demo (Video / Audio / Music)
 __tests__/            # PlaylistManager.test.ts
 ```
+
+## Changelog
+
+### 0.1.3 — Android New Architecture / Codegen fix
+
+Fixes the fatal app build failure (`add_subdirectory ... android/build/generated/source/codegen/jni/ which is not an existing directory` → `react_codegen_ObsidianMediaPlayerSpec which is not built by this project` → `:app:configureCMakeRelWithDebInfo` fails):
+
+- `codegenConfig.type`: `"components"` → `"all"` (`package.json`) — `src/specs/` holds 3 TurboModules + 1 Fabric component; the old value silently dropped the TurboModule specs.
+- `android/build.gradle` now applies `com.facebook.react` with `react { libraryName = "ObsidianMediaPlayerSpec"; codegenJavaPackageName = "com.obsidianmediaplayer" }` — this is what makes the app build generate the missing `codegen/jni/` + `codegen/java/` output. Added `externalNativeBuild/cmake` wiring.
+- Added `android/CMakeLists.txt` + `android/src/main/jni/OnLoad.cpp` — builds `libObsidianMediaPlayerSpec.so` and links `react_codegen_ObsidianMediaPlayerSpec`. Both are guarded (`if(EXISTS ...)`, `__has_include`) so Old Architecture / Paper builds without Codegen output still compile.
+- `ObsidianMediaPlayerPackage.kt` now extends `BaseReactPackage` (was legacy `ReactPackage`) with `getReactModuleInfoProvider()` so Audio / Music / Cache resolve as TurboModules; `<ObsidianVideo>` stays on the Paper `ViewManager` with automatic Fabric interop.
+- Fixed Kotlin `optString(..., null)` type-mismatch warnings (`ObsidianVideoView`, `ObsidianAudioModule`, `ObsidianMusicPlayerModule`, `ObsidianCacheModule`).
+
+After upgrading, clean the app's native state and rebuild (`expo prebuild --clean` → `expo run:android`). Do not hand-create `android/build/generated/...` — an empty directory does not define the `react_codegen_*` target.
 
 ## Roadmap — DON'Ts as Future Implements
 
@@ -320,7 +335,7 @@ These are intentional gaps / `pkg` DON'Ts from the audit; tracked here so consum
 | 5 | **Android per-track headers/type/drm** ✅ *fixed* | `Track` now carries `type/drmLicenseUri/cacheable` `ObsidianMusicPlayerModule.kt:27,94` → `buildMediaSource(t.type, t.cacheable, t.drmLicenseUri)` `ObsidianMusicPlayerModule.kt:114` | Full Widevine `DefaultDrmSessionManager` still roadmap #2 | `android/music/ObsidianMusicPlayerModule.kt:27,94,114`, `android/core/ExoPlayerProvider.kt:54` |
 | 6 | **Cache write path** ✅ *fixed* | Removed `setCacheWriteDataSinkFactory(null)` `ExoPlayerProvider.kt:43`; `CacheDataSource` now writes via default sink; added `prefetchToCache()` `ExoPlayerProvider.kt:37` for offline pre-warm + `ObsidianCacheModule` background prefetch + `SharedPreferences` index | Verify write throughput on low storage | `android/core/ExoPlayerProvider.kt:37,43` |
 | 7 | **Web background / MediaSession / headers** | `<video>/<audio>` fallback `src/components/Video.web.tsx`/`Audio.web.tsx` — `headers` can't be set on `src`, no `MediaSession`/`background` | Web: `fetch`→`blob:` URL for header auth; `navigator.mediaSession` for lock-screen; document `CacheStorage('obsidian-media')` CORS limits | `src/components/Video.web.tsx`, `src/components/Audio.web.tsx`, `src/core/DownloadManager.ts:29` |
-| 8 | **Package publishing** | `.npmignore:2` lists `lib/` contradicting `files:lib` `package.json:10`; `1.7MB player.png` dominates tarball; no `exports`/`sideEffects:false`; `codegenConfig.type:"components"` misses TurboModules; loose `peerDeps react:*` | Clean `.npmignore`, exclude `player.png` or host via CDN, add `exports: {".": {types, import, require}}` + `sideEffects:false`, change `codegenConfig` to `type:"all"` or split, pin `react>=18, react-native>=0.73` | `.npmignore:2`, `package.json:9,48,66`, `player.png`, `ios/ObsidianMediaPlayer.podspec:23` |
+| 8 | **Package publishing** | `.npmignore:2` lists `lib/` contradicting `files:lib` `package.json:10`; `1.7MB player.png` dominates tarball; no `exports`/`sideEffects:false`; loose `peerDeps react:*` | Clean `.npmignore`, exclude `player.png` or host via CDN, add `exports: {".": {types, import, require}}` + `sideEffects:false`, pin `react>=18, react-native>=0.73` (**codegenConfig part ✅ fixed in 0.1.3** — `type:"all"`, see Changelog) | `.npmignore:2`, `package.json:9,48,66`, `player.png`, `ios/ObsidianMediaPlayer.podspec:23` |
 | 9 | **Video `getState()` staleness** | `src/components/Video.tsx:64` `getState:()=>state` captures closure — can lag native | Sync via `getCurrentState()` native call or `useRef` for latest state | `src/components/Video.tsx:42,64` |
 | 10 | **Expo plugin peer** | `plugin/index.js:1` requires `@expo/config-plugins` at runtime without `peerDeps` | Move to `peerDependenciesMeta.optional` or lazy-require with helpful error | `plugin/index.js:1`, `plugin/package.json`, `package.json:47` |
 
@@ -349,6 +364,25 @@ npm run android
 # Web (if wired with react-native-web)
 npm run web
 ```
+
+## Developers
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="./thirteen-labs.png" alt="thirteen-labs" width="180" />
+      <br />
+      <strong>thirteen-labs</strong>
+    </td>
+    <td align="center" width="50%">
+      <img src="./obsidian-northern.png" alt="Obsidian Northern" width="180" />
+      <br />
+      <strong>Obsidian Northern</strong>
+    </td>
+  </tr>
+</table>
+
+> Built and maintained by **thirteen-labs** and **Obsidian Northern**.
 
 ## License
 

@@ -14,7 +14,11 @@ import org.json.JSONObject
  * Internally uses a single ExoPlayer with a disk cache.
  */
 class ObsidianAudioModule(private val ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) {
-  override fun getName() = "ObsidianAudio"
+  override fun getName() = NAME
+
+  companion object {
+    const val NAME = "ObsidianAudio"
+  }
 
   private val player: ExoPlayer by lazy { ExoPlayerProvider.buildPlayer(ctx) }
   private var loop = false
@@ -65,9 +69,9 @@ class ObsidianAudioModule(private val ctx: ReactApplicationContext) : ReactConte
     val headers = obj.optJSONObject("headers")?.let { jo ->
       buildMap { jo.keys().forEach { k -> put(k, jo.getString(k)) } }
     } ?: emptyMap()
-    val type = obj.optString("type", null)?.takeIf { it.isNotEmpty() }
+    val type = obj.optString("type").takeIf { it.isNotEmpty() }
     val cacheable = obj.optBoolean("cacheable", true)
-    val drmLicenseUri = obj.optString("drmLicenseUri", null)?.takeIf { it.isNotEmpty() }
+    val drmLicenseUri = obj.optString("drmLicenseUri").takeIf { it.isNotEmpty() }
     val item = MediaItem.Builder().setUri(uri).build()
     val source = ExoPlayerProvider.buildMediaSource(ctx, item, headers, type, cacheable, drmLicenseUri)
     player.setMediaSource(source); player.prepare()

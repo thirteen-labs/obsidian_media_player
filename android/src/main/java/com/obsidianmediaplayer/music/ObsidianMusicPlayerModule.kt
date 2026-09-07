@@ -18,7 +18,11 @@ import org.json.JSONObject
  * Registered as "ObsidianMusicPlayer".
  */
 class ObsidianMusicPlayerModule(private val ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) {
-  override fun getName() = "ObsidianMusicPlayer"
+  override fun getName() = NAME
+
+  companion object {
+    const val NAME = "ObsidianMusicPlayer"
+  }
 
   private val player: ExoPlayer by lazy { ExoPlayerProvider.buildPlayer(ctx) }
   private var mediaSession: MediaSession? = null
@@ -75,7 +79,7 @@ class ObsidianMusicPlayerModule(private val ctx: ReactApplicationContext) : Reac
   }
   private fun emitQueue() {
     send("onQueueChange", Arguments.createMap().apply {
-      putArray("tracks", Arguments.createArray().apply { tracks.forEach { putString(it.id) } })
+      putArray("tracks", Arguments.createArray().apply { tracks.forEach { pushString(it.id) } })
       putInt("index", currentIndex())
     })
   }
@@ -108,10 +112,10 @@ class ObsidianMusicPlayerModule(private val ctx: ReactApplicationContext) : Reac
       val headers = src.optJSONObject("headers")?.let { jo ->
         buildMap { jo.keys().forEach { k -> put(k, jo.getString(k)) } }
       } ?: emptyMap()
-      val type = src.optString("type", null)?.takeIf { it.isNotEmpty() }
-      val drm = src.optString("drmLicenseUri", null)?.takeIf { it.isNotEmpty() }
+      val type = src.optString("type").takeIf { it.isNotEmpty() }
+      val drm = src.optString("drmLicenseUri").takeIf { it.isNotEmpty() }
       val cacheable = if (src.has("cacheable")) src.optBoolean("cacheable", true) else true
-      out += Track(o.getString("id"), src.getString("uri"), headers, o.optString("title", null), o.optString("artist", null), type, drm, cacheable)
+      out += Track(o.getString("id"), src.getString("uri"), headers, o.optString("title").takeIf { it.isNotEmpty() }, o.optString("artist").takeIf { it.isNotEmpty() }, type, drm, cacheable)
     }
     return out
   }

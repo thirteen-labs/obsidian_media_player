@@ -1,6 +1,6 @@
 {
   "name": "obsidian-media-player",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "Plug-and-play media toolkit for React Native: Video, Audio, and a full-featured Music player with playlists, background playback, lock-screen controls, HLS/DASH streaming and caching.",
   "main": "lib/commonjs/index.js",
   "module": "lib/module/index.js",
@@ -13,6 +13,8 @@
     "android",
     "plugin",
     "player.png",
+    "thirteen-labs.png",
+    "obsidian-northern.png",
     "react-native.config.js",
     "!.idea",
     "!**/__tests__",
@@ -61,11 +63,15 @@
   "react-native-builder-bob": {
     "source": "src",
     "output": "lib",
-    "targets": ["commonjs", "module", "typescript"]
+    "targets": [
+      "commonjs",
+      "module",
+      "typescript"
+    ]
   },
   "codegenConfig": {
     "name": "ObsidianMediaPlayerSpec",
-    "type": "components",
+    "type": "all",
     "jsSrcsDir": "src/specs",
     "android": {
       "javaPackageName": "com.obsidianmediaplayer"

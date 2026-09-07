@@ -38,4 +38,4 @@ export type { DownloadInfo } from './core/DownloadManager';
 export { default as AudioNative } from './native/AudioNative';
 export { default as MusicPlayerNative } from './native/MusicPlayerNative';
 export { default as CacheNative } from './native/CacheNative';
-export { Commands as VideoCommands, default as ObsidianVideoNative } from './native/VideoNative';
+export { VideoCommands, default as ObsidianVideoNative } from './native/VideoNative';
