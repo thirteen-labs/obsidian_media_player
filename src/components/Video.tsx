@@ -54,7 +54,7 @@ export const Video = forwardRef<VideoHandle, VideoProps>(function Video(
   useImperativeHandle(
     ref,
     (): VideoHandle => ({
-      play: () => VideoCommands.play(innerRef.current),
+      play: () => VideoCommands.play(innerRef.current as unknown),
       pause: () => VideoCommands.pause(innerRef.current),
       stop: () => VideoCommands.stop(innerRef.current),
       seek: (seconds) => VideoCommands.seek(innerRef.current, seconds),
