@@ -1,5 +1,5 @@
 {
-  "name": "@obsidian_north/media-player",
+  "name": "obsidian-media-player",
   "version": "0.5.0",
   "description": "Plug-and-play media toolkit for React Native: Video, Audio, and a full-featured Music player with playlists, background playback, lock-screen controls, HLS/DASH streaming and caching.",
   "main": "lib/commonjs/index.js",

@@ -10,7 +10,7 @@
   "dependencies": {
     "react": "18.2.0",
     "react-native": "0.74.7",
-    "@obsidian_north/media-player": "file:.."
+    "obsidian-media-player": "file:.."
   },
   "devDependencies": {
     "@types/react": "^18.2.0",

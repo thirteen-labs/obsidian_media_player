@@ -402,6 +402,24 @@ if (bridging) {
 
 const podspec = readFileSync(join(swiftDir, 'ObsidianMediaPlayer.podspec'), 'utf8');
 
+// The podspec declares its React Native dependencies through RN's own
+// `install_modules_dependencies(s)` helper rather than listing `s.dependency`
+// lines. It has to: `React-RCTFabric` — the pod providing
+// `RCTLegacyViewManagerInteropComponentView`, which the +load allowlist opt-in
+// needs — ships only inside the react-native npm package and returns 404 from
+// the CocoaPods trunk, so `pod lib lint` could not resolve it (FG-3.1).
+//
+// So these checks assert on *intent* — the pod must be accounted for somehow —
+// not on a literal line. Asserting the literal would have failed the moment the
+// helper was adopted, for a reason that has nothing to do with correctness, and
+// would then train people to read this gate as noise.
+
+// Declared directly, or delegated to the helper. Both satisfy the intent.
+const declares = (pod) =>
+  new RegExp(`^\\s*s\\.dependency\\s+"${pod}"`, 'm').test(podspec) ||
+  (/^\s*install_modules_dependencies\(/m.test(podspec) &&
+    new RegExp(`^\\s*(#|\\s).*${pod}`, 'm').test(podspec));
+
 if (/^\s*s\.dependency\s+"ReactCodegen"/m.test(podspec)) {
   fail(
     'podspec:codegen-name',
@@ -409,8 +427,11 @@ if (/^\s*s\.dependency\s+"ReactCodegen"/m.test(podspec)) {
       'pod install fails with "Unable to find a specification for ReactCodegen".'
   );
 }
-if (!/^\s*s\.dependency\s+"React-Codegen"/m.test(podspec)) {
-  fail('podspec:codegen-name', 'does not depend on React-Codegen');
+if (!declares('React-Codegen')) {
+  fail(
+    'podspec:codegen-name',
+    'does not depend on React-Codegen, directly or via install_modules_dependencies'
+  );
 } else {
   ok('podspec:codegen-name', 'depends on React-Codegen');
 }
@@ -419,17 +440,23 @@ for (const [pod, why] of [
   ['RCT-Folly', 'a vendored pod the app must source consistently; depending on it from a library risks a duplicate or mismatched copy'],
   ['React-RCTAppDelegate', 'an app-target pod; a library depending on it is backwards'],
 ]) {
+  // Only ever a *direct* declaration is a problem. install_modules_dependencies
+  // legitimately pulls RCT-Folly in — that is RN's own helper doing its job — so
+  // flagging it here would fail the gate for the correct, intended behaviour.
   if (new RegExp(`^\\s*s\\.dependency\\s+"${pod}"`, 'm').test(podspec)) {
-    fail('podspec:app-pods', `declares ${pod}: ${why}`);
+    fail('podspec:app-pods', `declares ${pod} directly: ${why}`);
   }
 }
 
-if (!/React-RCTFabric/.test(podspec)) {
+if (!declares('React-RCTFabric')) {
   fail(
     'podspec:fabric',
-    'does not depend on React-RCTFabric. RCTLegacyViewManagerInteropComponentView ' +
+    'does not depend on React-RCTFabric, directly or via ' +
+      'install_modules_dependencies. RCTLegacyViewManagerInteropComponentView ' +
       'lives in that pod, and the +load allowlist opt-in needs its header.'
   );
+} else {
+  ok('podspec:fabric', 'React-RCTFabric is declared (via install_modules_dependencies)');
 }
 
 if (!/RCT_NEW_ARCH_ENABLED/.test(podspec)) {

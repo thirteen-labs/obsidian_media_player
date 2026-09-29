@@ -35,8 +35,8 @@
  * contributor's CocoaPods version is the one that runs; otherwise plain `pod`.
  */
 
-import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -65,12 +65,74 @@ const useBundle = existsSync(join(ROOT, 'Gemfile'));
 const pod = useBundle ? 'bundle' : 'pod';
 const prefix = useBundle ? ['exec', 'pod'] : [];
 
+/**
+ * The React Native pods this pod depends on are **local**, not published.
+ *
+ * `React-RCTFabric` — which provides `RCTLegacyViewManagerInteropComponentView`,
+ * the header `ios/ObsidianMediaPlayerModules.mm` imports — ships as a podspec
+ * inside the react-native npm package and returns 404 from the CocoaPods trunk.
+ * `pod lib lint` resolves dependencies from the trunk, so without help it cannot
+ * ever resolve it:
+ *
+ *   ERROR | [iOS] unknown: ... (Unable to find a specification for
+ *   `React-RCTFabric` depended upon by `ObsidianMediaPlayer`)
+ *
+ * `--include-podspecs` is the supported way to lint against development pods.
+ * Every local podspec react-native ships is passed, rather than a hand-kept list
+ * of the ones currently needed: the dependency graph is transitive (RCTFabric
+ * pulls RCT-Folly, glog, Yoga, React-jsi, hermes-engine, React-Fabric, ...), and
+ * a list that was correct for one RN version is silently short for the next.
+ */
+const RN_DIR = dirname(
+  execFileSync('node', ['--print', "require.resolve('react-native/package.json')"], {
+    cwd: ROOT,
+    encoding: 'utf8',
+  }).trim(),
+);
+
+function localPodspecs(dir, found = []) {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) localPodspecs(p, found);
+    else if (e.name.endsWith('.podspec')) found.push(p);
+  }
+  return found;
+}
+
+const rnPodspecs = localPodspecs(RN_DIR);
+if (rnPodspecs.length === 0) {
+  console.error(
+    `Found no .podspec files under ${RN_DIR}.\n` +
+      '  `npm ci` has to run before this gate: see .github/workflows/ci.yml.',
+  );
+  process.exit(2);
+}
+console.log(`[pod] ${rnPodspecs.length} local React Native podspecs from ${RN_DIR}`);
+
 const args = [
   ...prefix,
   'lib', 'lint', PODSPEC,
   '--allow-warnings',
   '--platforms=ios',
   '--no-clean',
+  // ONE flag carrying a glob, not one flag per file.
+  //
+  // CocoaPods declares it as `--include-podspecs=**/*.podspec` and consumes it
+  // as a single value: `validator.rb` does
+  //   additional_path_pods = Dir.glob(include_podspecs)...
+  // so it is glob-expanded by Ruby, not by the shell and not by a repeat of the
+  // flag. Repeating `--include-podspecs` once per podspec would leave
+  // `include_podspecs` holding only the last value, and the lint would fail with
+  // the same "Unable to find a specification" error this change exists to fix.
+  //
+  // The glob is anchored at RN's package root and covers the whole tree because
+  // the dependency graph is transitive: RCTFabric pulls RCT-Folly, glog, Yoga,
+  // React-jsi, hermes-engine, React-Fabric and more, and a hand-kept list of
+  // "the ones we need" is silently short on the next RN version.
+  //
+  // Forward slashes are fine on Windows too — the gate is macOS-only, but
+  // Dir.glob wants one separator.
+  `--include-podspecs=${RN_DIR.replace(/\\/g, '/')}/**/*.podspec`,
   ...(process.argv.includes('--verbose') ? ['--verbose'] : []),
 ];
 

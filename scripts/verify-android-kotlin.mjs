@@ -44,7 +44,7 @@ import {
   existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -268,7 +268,7 @@ function compile({ rn, kotlin }) {
       join(jars, `kotlin-stdlib-${kotlin}.jar`),
       join(jars, `react-android-${rn}.jar`),
     ])
-    .join(';');
+    .join(delimiter);
 
   const launch = [
     join(jars, `kotlin-compiler-embeddable-${kotlin}.jar`),
@@ -276,7 +276,7 @@ function compile({ rn, kotlin }) {
     join(jars, `kotlinx-coroutines-core-jvm-${cv}.jar`),
     join(jars, 'annotations-23.0.0.jar'),
     join(jars, 'trove4j-1.0.20200330.jar'),
-  ].join(';');
+  ].join(delimiter);
 
   const outDir = join(CACHE, 'out', `${rn}-${kotlin}`);
   rmSync(outDir, { recursive: true, force: true });
@@ -303,11 +303,28 @@ function compile({ rn, kotlin }) {
   const producedClasses = hasClassFiles(outDir);
   if (r.error || r.status !== 0 || !producedClasses) {
     const detail = (text.trim() || `java exited ${r.status} with no output`).split(/\r?\n/)[0];
-    return [
+    const out = [
       `KOTLIN COMPILER FAILED TO RUN (status=${r.status}) — this is a harness bug, not a source error.`,
       `  ${detail}`,
-      '  Check that a JDK 17+ is on PATH and that the compiler jar was cached.',
     ];
+    // "Could not find or load main class" means the launch classpath did not
+    // reach java as a list of jars, and the overwhelmingly common cause is the
+    // separator. java splits -cp on path.delimiter: ';' on Windows, ':'
+    // everywhere else. Hardcoding ';' works on a Windows dev box and fails on
+    // every CI runner, with a message that reads like a missing JDK — which is
+    // exactly how it was misdiagnosed the first time. So name it here.
+    if (/Could not find or load main class|Could not find or load main/.test(text)) {
+      out.push(
+        '  java could not load the compiler class, so the launch classpath was not',
+        `  understood. It is joined with path.delimiter (${JSON.stringify(delimiter)} on`,
+        '  this host) — if that is wrong for the platform java is running on, the',
+        '  whole string is read as ONE filename.',
+      );
+    } else {
+      out.push('  Check that a JDK 17+ is on PATH and that the compiler jar was cached.');
+    }
+    out.push(`  launch -cp was: ${launch}`);
+    return out;
   }
 
   return [...new Set(errors)];

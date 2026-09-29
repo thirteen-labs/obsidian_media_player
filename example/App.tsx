@@ -17,7 +17,7 @@ import {
   useMusicPlayer,
   type VideoHandle,
   type Track,
-} from '@obsidian_north/media-player';
+} from 'obsidian-media-player';
 
 const HLS_DEMO = {
   uri: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
