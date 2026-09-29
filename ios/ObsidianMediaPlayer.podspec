@@ -64,7 +64,23 @@ Pod::Spec.new do |s|
   s.homepage     = package["repository"]["url"].sub(/\.git$/, "")
   s.license      = package["license"]
   s.authors      = { "Obsidian" => "oss@obsidian.dev" }
-  s.platforms    = { :ios => "13.0" }
+  # From React Native's own helper, never a literal.
+  #
+  # It used to say `{ :ios => "13.0" }`. RN 0.74 declares 13.4
+  # (scripts/cocoapods/helpers.rb -> Helpers::Constants.min_ios_version_supported),
+  # and `install_modules_dependencies` above pulls in pods that use that same
+  # helper — glog among them, via third-party-podspecs/glog.podspec. So this pod
+  # was claiming a *lower* minimum than its own dependencies, and `pod lib lint`
+  # failed on exactly that:
+  #
+  #   ERROR | [iOS] unknown: (CocoaPods could not find compatible versions for pod
+  #   "glog": Specs satisfying the `glog (from .../third-party-podspecs)`
+  #   dependency were found, but they required a higher minimum deployment target.)
+  #
+  # Deriving it means a future RN bump cannot re-open this, which is the whole
+  # reason RN exposes min_supported_versions.
+  s.platforms    = min_supported_versions
+
   s.source       = { :git => package["repository"]["url"], :tag => "#{s.version}" }
   s.swift_version = "5.0"
 

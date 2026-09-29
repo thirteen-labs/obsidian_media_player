@@ -78,10 +78,47 @@ target_link_libraries(
   fbjni::fbjni
   ReactAndroid::jsi
   ReactAndroid::fabricjni
+  ReactAndroid::folly_runtime
+  ReactAndroid::glog
   ReactAndroid::react_nativemodule_core
   ReactAndroid::react_render_core
   ReactAndroid::react_render_componentregistry
   ReactAndroid::rrc_view
+  ReactAndroid::turbomodulejsijni
+  ReactAndroid::yoga
+)
+
+# Folly's compile flags, which must MATCH the ones react-android compiled its own
+# copy of Folly with. RN publishes them from
+# `scripts/cocoapods/helpers.rb` -> `Helpers::Constants.folly_config`:
+#
+#   '-DFOLLY_NO_CONFIG -DFOLLY_MOBILE=1 -DFOLLY_USE_LIBCPP=1
+#    -DFOLLY_CFG_NO_COROUTINES=1 -DFOLLY_HAVE_CLOCK_GETTIME=1
+#    -Wno-comma -Wno-shorten-64-to-32'
+#
+# Without at least `-DFOLLY_NO_CONFIG`, `folly/portability/Config.h` does
+# `#include <folly/folly-config.h>` — and that header is shipped by NO prefab
+# module (verified against the react-android AAR's prefab/modules listing:
+# folly_runtime ships `folly/portability/Config.h` but not `folly/folly-config.h`,
+# which only exists in a Folly source build). So the build dies with:
+#
+#   fatal error: 'folly/folly-config.h' file not found
+#
+# The other flags are not optional decoration: they are ABI switches. A
+# translation unit that sees a different FOLLY_MOBILE / FOLLY_USE_LIBCPP than
+# the react-android .so it links against gets a different struct layout or
+# calling convention, which is a silent, runtime-only corruption. That is why
+# they are copied from RN's own list rather than guessed.
+target_compile_options(
+  ${CMAKE_PROJECT_NAME}
+  PRIVATE
+    -DFOLLY_NO_CONFIG
+    -DFOLLY_MOBILE=1
+    -DFOLLY_USE_LIBCPP=1
+    -DFOLLY_CFG_NO_COROUTINES=1
+    -DFOLLY_HAVE_CLOCK_GETTIME=1
+    -Wno-comma
+    -Wno-shorten-64-to-32
 )
 
 # Fabric component descriptors generated from src/specs/NativeObsidianVideo.ts.
@@ -92,8 +129,72 @@ set(CODEGEN_JNI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/build/generated/source/codegen/j
 # "C:\Users\<First Last>\..." checkout), which would otherwise split into
 # multiple arguments and produce a confusing "not an existing directory" error.
 if(EXISTS "${CODEGEN_JNI_DIR}/CMakeLists.txt")
-  # The generated target declares its own INTERFACE include directories, so
-  # linking is sufficient — no manual target_include_directories needed.
   add_subdirectory("${CODEGEN_JNI_DIR}" codegen_ObsidianMediaPlayerSpec_build)
+
+  # THE GENERATED CMakeLists LINKS ITS PREFAB DEPENDENCIES BY *BARE* NAME.
+  #
+  # @react-native/codegen's GenerateModuleJniH.js emits:
+  #
+  #   target_link_libraries(react_codegen_ObsidianMediaPlayerSpec
+  #     fbjni folly_runtime glog jsi react_codegen_rncore react_debug
+  #     react_nativemodule_core ... rrc_view turbomodulejsijni yoga)
+  #
+  # None of those are the imported targets AGP's prefab actually creates. It
+  # creates `ReactAndroid::<module>` for react-android and `fbjni::fbjni` for
+  # fbjni. A bare `rrc_view` is not a target, so CMake treats it as a raw name
+  # to hand to the linker and — critically — adds NO include directories for it.
+  #
+  # The symptom is that the generated sources cannot find any React header,
+  # while the hand-written sources compile fine in the same build:
+  #
+  #   fatal error: 'ReactCommon/TurboModule.h' file not found          (JSI gen)
+  #   fatal error: 'ReactCommon/JavaTurboModule.h' file not found
+  #   fatal error: 'react/renderer/components/view/ViewProps.h' file not found
+  #   fatal error: 'react/renderer/components/view/ViewEventEmitter.h' file not found
+  #
+  # In the failing CI log, the clang++ line for OnLoad.cpp carries a long list of
+  # `-isystem .../prefab/modules/...` arguments while the four codegen lines carry
+  # none. Same project, same find_package, two link styles, two different
+  # outcomes — which is what identified the bare-name targets as the cause.
+  #
+  # So: link the namespaced form here, one-for-one with what the generated file
+  # asked for. This is additive — CMake merges the two target_link_libraries
+  # calls — and the bare names are left in place for the case where a future
+  # codegen version emits namespaced targets itself.
+  target_link_libraries(react_codegen_ObsidianMediaPlayerSpec
+    fbjni::fbjni
+    ReactAndroid::folly_runtime
+    ReactAndroid::glog
+    ReactAndroid::jsi
+    ReactAndroid::react_codegen_rncore
+    ReactAndroid::react_debug
+    ReactAndroid::react_nativemodule_core
+    ReactAndroid::react_render_componentregistry
+    ReactAndroid::react_render_core
+    ReactAndroid::react_render_debug
+    ReactAndroid::react_render_graphics
+    ReactAndroid::react_render_imagemanager
+    ReactAndroid::react_render_mapbuffer
+    ReactAndroid::react_utils
+    ReactAndroid::rrc_image
+    ReactAndroid::rrc_view
+    ReactAndroid::turbomodulejsijni
+    ReactAndroid::yoga
+  )
+
+  # The generated sources also include Folly headers (through
+  # ComponentDescriptor.h -> EventDispatcher.h -> folly/dynamic.h), so they need
+  # the same FOLLY_* defines as the target above.
+  target_compile_options(react_codegen_ObsidianMediaPlayerSpec
+    PRIVATE
+      -DFOLLY_NO_CONFIG
+      -DFOLLY_MOBILE=1
+      -DFOLLY_USE_LIBCPP=1
+      -DFOLLY_CFG_NO_COROUTINES=1
+      -DFOLLY_HAVE_CLOCK_GETTIME=1
+      -Wno-comma
+      -Wno-shorten-64-to-32
+  )
+
   target_link_libraries(${CMAKE_PROJECT_NAME} react_codegen_ObsidianMediaPlayerSpec)
 endif()
