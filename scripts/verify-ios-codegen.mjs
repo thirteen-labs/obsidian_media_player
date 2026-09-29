@@ -44,15 +44,43 @@ const ok = (rule, detail) => notes.push({ rule, detail });
 // 1. Run codegen.
 // ---------------------------------------------------------------------------
 
-let combine;
+// `combine-js-to-schema.js` does **not** export a callable. Depending on the
+// codegen version it exports an object of named functions, and the default
+// export shape has moved across 0.73 → 0.74 → 0.80. The gate resolves it by
+// capability instead of by name, so a codegen upgrade cannot silently turn this
+// file into a no-op that reports a failure it did not cause.
+//
+// `combineSchemas(files)` is the one that takes an absolute file list, which is
+// what this gate has. `combineSchemasInFileList` takes (fileList, platform,
+// exclude) and is the wrong shape.
+let combineSchemas;
 let RNCodegen;
 try {
   const codegenRoot = dirname(require.resolve('@react-native/codegen/package.json'));
-  combine = require(join(codegenRoot, 'lib/cli/combine/combine-js-to-schema.js'));
+  const mod = require(join(codegenRoot, 'lib/cli/combine/combine-js-to-schema.js'));
+
+  combineSchemas =
+    typeof mod === 'function'
+      ? mod // older codegen exported the function directly
+      : mod.combineSchemas ?? mod.default?.combineSchemas ?? mod.default;
+
   RNCodegen = require(join(codegenRoot, 'lib/generators/RNCodegen.js'));
 } catch (e) {
   console.error('Cannot load @react-native/codegen. Is node_modules installed?');
   console.error(e.message);
+  process.exit(1);
+}
+
+if (typeof combineSchemas !== 'function') {
+  // Fail with the reason, not downstream as five confusing "was not generated"
+  // errors. This exact ambiguity made the gate self-test report the ios gate as
+  // "red for the wrong reason".
+  console.error('Could not resolve a combine function from @react-native/codegen.');
+  console.error(
+    'combine-js-to-schema.js exports: ' +
+      (typeof mod === 'function' ? '(a bare function)' : Object.keys(mod).join(', '))
+  );
+  console.error('Expected an export taking an array of absolute spec file paths.');
   process.exit(1);
 }
 
@@ -81,7 +109,7 @@ let moduleSpecs = [];
 let moduleNames = [];
 {
   try {
-    const schemaForNames = combine(specFiles);
+    const schemaForNames = combineSchemas(specFiles);
     for (const [key, value] of Object.entries(schemaForNames.modules ?? {})) {
       if (value.type !== 'NativeModule') continue;
       moduleSpecs.push(key);
@@ -93,7 +121,7 @@ let moduleNames = [];
 }
 
 try {
-  const schema = combine(specFiles);
+  const schema = combineSchemas(specFiles);
   const nativeModules = Object.values(schema.modules ?? {}).filter(
     (m) => m.type === 'NativeModule',
   );

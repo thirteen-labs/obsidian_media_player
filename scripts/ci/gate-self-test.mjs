@@ -246,6 +246,18 @@ function runProbe(probe) {
   let failedForWrongReason = false;
 
   try {
+    // Declarative probes return `write`; imperative ones (bundle, kotlin) have
+    // already written the file inside `apply()` themselves and return only
+    // `{ file, original }`.
+    //
+    // This line is load-bearing. It was missing, so `write` was never consumed:
+    // no probe file was ever created, the gates had nothing to fail on, and five
+    // of six probes reported "PASSED WHEN IT SHOULD HAVE FAILED" — the self-test
+    // failing at its own job while claiming the gates were not gates.
+    if (mutation.write !== undefined) {
+      writeFileSync(target, mutation.write);
+    }
+
     const { status, output } = gate(probe.gate.split(' ').slice(1), { cwd: ROOT });
     if (status === 0) {
       console.error(
@@ -282,16 +294,29 @@ function runProbe(probe) {
 
 // Refuse to run on a dirty tree: a restore on top of someone's uncommitted edit
 // would silently revert their work.
+//
+// `--force` exists for exactly one case: you have just *changed this script* and
+// need to prove the change works. Every probe restores by deleting an injected
+// file or rewriting a captured `original`, and the only files touched are the
+// ones a probe declares — so a forced run cannot revert an unrelated edit. CI
+// runs clean and never passes it.
+const FORCE = process.argv.includes('--force');
 const dirty = dirtyFiles();
-if (dirty && dirty.length) {
+if (!FORCE && dirty && dirty.length) {
   console.error(
     'Refusing to run: the working tree has uncommitted changes. This script\n' +
       'rewrites and restores files, and would revert your work on a probe that\n' +
       'is interrupted.\n\n' +
       dirty.map((d) => `  ${d}`).join('\n') +
-      '\n\nCommit or stash them, then re-run.',
+      '\n\nCommit or stash them, then re-run -- or pass --force if you are\n' +
+      'verifying a change to this script itself.',
   );
   process.exit(2);
+}
+if (FORCE && dirty && dirty.length) {
+  console.log(
+    `--force: proceeding on a dirty tree (${dirty.length} entr${dirty.length === 1 ? 'y' : 'ies'}).`,
+  );
 }
 
 let selected = PROBES.filter((p) => !p.full || FULL);
