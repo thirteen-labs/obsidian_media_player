@@ -8,7 +8,7 @@ const { withInfoPlist, withAndroidManifest } = require('@expo/config-plugins');
  *   bare prebuilds).
  *
  * Usage (app.json):
- *   { "plugins": [["obsidian-media-player/plugin", { "backgroundAudio": true }]] }
+ *   { "plugins": [["@obsidian_north/media-player/plugin", { "backgroundAudio": true }]] }
  */
 function withObsidian(config, props = {}) {
   const { backgroundAudio = true } = props;

@@ -59,7 +59,12 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - uses: android-actions/setup-android@v3
+      # v4, not v3: v3's default `packages` is "tools platform-tools" and Google
+      # no longer serves the legacy `tools` package, so the action dies with
+      # `Warning: Failed to find package 'tools'` / exit 1 before any gate runs.
+      - uses: android-actions/setup-android@v4
+        with:
+          log-accepted-android-sdk-licenses: false
       - name: install SDK platform
         run: sdkmanager "platforms;android-35"
       - name: cache Kotlin verify artifacts
@@ -89,21 +94,37 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
+      # v4, not v3 — see the gate-self-test job for why. `sdkmanager` is already
+      # on PATH from this action; the package list below is all this job needs
+      # on top of the `platform-tools` default.
+      - uses: android-actions/setup-android@v4
+        with:
+          log-accepted-android-sdk-licenses: false
 
-      # NDK and CMake are pinned to what the RN 0.74 template asks the module to
-      # use. The module reads `ndkVersion` from the host's rootProject.ext, so
-      # these have to match the scaffolded app or the module silently falls back
-      # to a second NDK — which is the bug the comment at the top of
-      # android/build.gradle is about.
-      - name: install NDK + CMake + platform
+      # Two different platform pins are needed in one job, and getting this wrong
+      # is silent-ish (AGP auto-downloads, so the build still works — just 4
+      # minutes slower, or fails with a confusing "Failed to find target with
+      # hash string 'android-35'" if auto-download is off):
+      #
+      #   android-34 / build-tools 34.0.0 — what the RN 0.74.7 host template pins
+      #     in its buildscript ext. `verify:android:host` scaffolds that template,
+      #     and this module reads compileSdkVersion off the host's rootProject.ext.
+      #   android-35 — the `PLATFORM` constant in scripts/verify-android-kotlin.mjs,
+      #     whose android.jar is the compile classpath for the Kotlin matrix.
+      #
+      # NDK/CMake are pinned to the same template: the module takes ndkVersion from
+      # the host, so a mismatch means it silently falls back to a second NDK —
+      # exactly the bug the comment at the top of android/build.gradle is about.
+      - name: install SDK platform + NDK + CMake
         run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager \
+            "platforms;android-34" \
             "platforms;android-35" \
+            "build-tools;34.0.0" \
             "platform-tools" \
             "ndk;26.1.10909125" \
             "cmake;3.22.1"
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
 
       # The first run downloads the NDK (~2 GB), CMake and every media3 AAR. An
       # uncached job is the kind of timeout that gets disabled "temporarily" and
@@ -134,7 +155,10 @@ jobs:
         run: npm run verify:android
 
       # Scaffolds a throwaway RN host app, autolinks this module into it, and
-      # runs `:obsidian-media-player:assembleRelease`. Needs the app: the module
+      # runs `:<nameCleansed>:assembleRelease`, where the autolinker derives the
+      # Gradle project name from the package name (a scope becomes a `_` prefix,
+      # so `@obsidian_north/media-player` -> `:obsidian_north_media-player`).
+      # Needs the app: the module
       # resolves ndkVersion/compileSdkVersion/ABIs from rootProject.ext, so it
       # cannot be built standalone.
       - name: Gradle assembleRelease in a host app
@@ -173,6 +197,17 @@ jobs:
           path: ~/Library/Caches/CocoaPods
           key: cocoapods-${{ runner.os }}
           restore-keys: cocoapods-${{ runner.os }}
+
+      # Both steps below need node_modules, so this is not optional setup:
+      #   - `verify:ios` resolves `@react-native/codegen` out of node_modules and
+      #     dies at startup with "Cannot load @react-native/codegen" without it,
+      #     which is a false red that says nothing about the iOS sources;
+      #   - `pod lib lint` resolves React-Core / React-Codegen / React-RCTFabric
+      #     from node_modules/react-native, and the podspec reads package.json
+      #     for its version.
+      # Every other job in this workflow already installs first; this one did
+      # not, and the gate it runs is the whole point of the job.
+      - run: npm ci
 
       # Codegen cross-check first, and it is not just `pod lib lint` padding.
       # The iOS half of Wave 3 was four separate hard build failures that no

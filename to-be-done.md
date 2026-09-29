@@ -115,16 +115,32 @@ CI job has ever built this module, and the two hard Kotlin compile errors that
 reached a published version were found by reading, not by building. See
 [FG-0.6](#fg-06--nothing-has-ever-compiled-the-native-module).
 
-**Wave 0's remaining work is now written but unproven.** `.github/workflows/ci.yml`
-exists with the three gates FG-0.6 asks for, and a self-test
-(`npm run verify:gates`) proves each one goes red on a known-bad input. Nothing
-in that sentence has been executed: a workflow that has never run is a document,
-not a gate, which is the same failure FG-0.6 was filed for.
+**Wave 0's CI work: the self-test now runs, and it earned its keep.**
+`npm run verify:gates` injects a known-bad input into each gate and asserts the
+gate goes red *for the right reason*. It passed 6/6 on its first honest run —
+after fixing two real defects it exposed in itself:
 
-Test coverage went from 9 tests of pure functions to **58 across six suites**
-(`Video`, `MusicPlayer`, `Audio`, `useMusicPlayer`, `MediaProvider`,
-`PlaylistManager`). Every new test was verified to **fail against the pre-fix
-code** — see [Verifying the regression tests](#verifying-the-regression-tests).
+- **`runProbe` never wrote the probe files.** Five of six probes declared
+  `write: [...]` and returned it; the runner read `mutation.file` and never
+  consumed `mutation.write`. No probe file was created, so the gates had nothing
+  to fail on, and four of them reported "PASSED WHEN IT SHOULD HAVE FAILED". Only
+  `bundle` worked, because it writes inline inside `apply()`.
+- **`verify:ios` was crashing on its own** — it called
+  `combine-js-to-schema`'s module *object* as a function. It had been passing
+  against a codegen version that exported a bare function and broke when
+  `npm install` re-resolved `@react-native/codegen` to 0.74.89. It now resolves by
+  capability and fails with a message naming the real exports.
+
+A gate that has never been challenged is a hypothesis, and this one turned out to
+be making its own. The `pod` probe still skips — it needs macOS.
+
+`.github/workflows/ci.yml` exists with the three gates FG-0.6 asks for, and **none
+of its jobs has ever executed**. A workflow that has never run is a document, not
+a gate, which is the same failure FG-0.6 was filed for.
+
+Test coverage went from 9 tests of pure functions to **229 across fourteen suites**.
+Every new test was verified to **fail against the pre-fix code** — see
+[Verifying the regression tests](#verifying-the-regression-tests).
 
 **One correction to the original plan.** FG-6.5 step 5 said to strip DRM from
 `package.json:4`. The description never mentioned DRM; the advertising was all in
@@ -689,11 +705,17 @@ code. Probes are additive files wherever possible; the two that must edit real
 sources (`src/index.ts` for the web graph, `android/CMakeLists.txt` for the
 CMake probe) are backed up and restored in a `finally`, and the script refuses
 to start on a dirty tree so an interrupted run cannot revert your work.
-`--full` adds the Gradle and pod probes. CI runs the fast subset.
+`--force` overrides that, for the one case where you have just changed the
+self-test and need to prove the change works. `--full` adds the Gradle and pod
+probes. CI runs the fast subset.
 
-**Unproven:** none of this has executed. The workflow has never run, so the red
-probes for the Gradle and pod jobs are unverified assertions about a build
-nobody has watched. Treat the first CI run as the real test of this item.
+**Now proven — 6/6 on the fast subset, and it found two real bugs doing it.** See
+the note near the top of this document. The `pod` probe still skips (macOS), so
+`--full` remains unexecuted.
+
+**Still unproven:** the CI *workflow* has never run. The red probes for the
+Gradle and pod jobs are unverified assertions about a build nobody has watched.
+Treat the first CI run as the real test of that half.
 
 **Verification**
 - [x] `npm run verify:android` — both matrix targets compile

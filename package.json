@@ -1,5 +1,5 @@
 {
-  "name": "obsidian-media-player",
+  "name": "@obsidian_north/media-player",
   "version": "0.5.0",
   "description": "Plug-and-play media toolkit for React Native: Video, Audio, and a full-featured Music player with playlists, background playback, lock-screen controls, HLS/DASH streaming and caching.",
   "main": "lib/commonjs/index.js",
@@ -62,10 +62,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/obsidian/obsidian-media-player.git"
+    "url": "https://github.com/thirteen-labs/obsidian_media_player.git"
   },
   "license": "MIT",
-  "author": "Obsidian",
+  "author": "Thirteen Labs",
   "peerDependencies": {
     "react": ">=18.0.0",
     "react-native": ">=0.74.0"

@@ -25,7 +25,7 @@ All six run in CI. Four run on any host; two need specific hardware.
 | `npm run verify:android` | All 9 `.kt` files type-check against real artifacts, RN 0.74 **and** 0.80 | — | **pass** |
 | `npm run verify:android:host` | Gradle `assembleRelease` in a scaffolded host app | NDK | **never run** |
 | `npm run verify:ios:pod` | `pod lib lint --allow-warnings` | macOS + CocoaPods | **never run** |
-| `npm run verify:gates` | Proves each gate goes red on a known-bad input | **clean git tree** | **blocked** |
+| `npm run verify:gates` | Proves each gate goes red on a known-bad input | clean tree (or `--force`) | **pass — 6/6 probes** |
 
 `npm run verify` = typecheck + lint + test + `bundle:web` + `verify:ios`.
 
@@ -41,14 +41,32 @@ ever been compiled by Gradle, linted by CocoaPods, or run on a device.
    manifest merging, CMake/NDK, or resource handling.
 2. **`verify:ios:pod`** — `pod lib lint` resolves a real dependency graph. The
    podspec change is verified only as *text* (declared dependencies, architecture
-   guard, bridging-header setting), which is not the same thing.
-3. **`verify:gates`** — needs a clean tree because it mutates files to prove the
-   gates catch things. **85 files are uncommitted**, so it cannot run. This
-   matters: every "mutation confirmed to fail" claim in the plan and in this file
-   currently depends on checks that do not execute.
+   guard, bridging-header setting), which is not the same thing. This is the only
+   gate left that has never executed.
 
-**Highest-value next action: commit, then run `verify:gates`.** Everything else
-in the "not verified" column is downstream of CI that has never been switched on.
+**`verify:gates` now passes 6/6** — and finding that out took fixing two real
+defects in the verification infrastructure itself, which is the argument for
+having it:
+
+- **`runProbe` never wrote the probe files.** Five of six probes declared
+  `write: [...]` and returned it; the runner read `mutation.file` and never
+  consumed `mutation.write`. No probe file was created, so the gates had nothing
+  to fail on. Only `bundle` worked, because it writes inline inside `apply()`.
+  Four gates were reported as "PASSED WHEN IT SHOULD HAVE FAILED" — the
+  self-test failing at its own job while claiming the gates were not gates.
+- **`verify:ios` was crashing on its own.** It did
+  `combine = require('combine-js-to-schema')` and called it as a function, but
+  that module exports an object of named functions. It had been passing against a
+  codegen version that *did* export a bare function, and broke when
+  `npm install` re-resolved `@react-native/codegen` to 0.74.89. It now resolves
+  by capability, and fails with a message naming the real exports if it cannot.
+
+The lesson is the one this document keeps making: a gate that has never been
+challenged is a hypothesis. `verify:gates` is the only thing that could say so,
+and it was itself dormant until someone ran it.
+
+**Highest-value next action: commit, then switch on CI.** The self-test now runs
+locally, but `verify:android:host` and `verify:ios:pod` are still only *written*.
 
 ---
 
@@ -243,20 +261,18 @@ Ordered by how likely they are to bite a consumer.
    Manifest merging, `pod lib lint`, and on-device behaviour are all unproven.
    This is why Wave 3 is 🟡 rather than ✅ despite the code being correct: the
    fixes are verified by *static cross-check*, not by a pod that resolves.
-2. **85 uncommitted files** against a `0.1.5` git baseline. `verify:gates` is
-   blocked on a clean tree, so the gates' own regression testing is dormant.
-3. **Android has no unit-test source set.** Every Android fix is
+2. **Android has no unit-test source set.** Every Android fix is
    compile-verified and otherwise untested. The same for Swift.
-4. **Web caching buffers whole files.** A 200 MB video is a 200 MB allocation
+3. **Web caching buffers whole files.** A 200 MB video is a 200 MB allocation
    before playback starts, and `fetch` is subject to CORS. `hls` / `dash` are
    refused rather than silently truncated.
-5. **`setBackgroundEnabled` is a no-op on web.** A browser has no audio session.
-6. **No audio focus / interruption handling on iOS.** The session *category* is
+4. **`setBackgroundEnabled` is a no-op on web.** A browser has no audio session.
+5. **No audio focus / interruption handling on iOS.** The session *category* is
    configured; `AVAudioSession` interruptions, route changes and headphone-unplug
    are not handled. (Android got this in FG-4.0.)
-7. **`hls` / `dash` offline downloads are refused** on web. Android handles
+6. **`hls` / `dash` offline downloads are refused** on web. Android handles
    segment sets on a best-effort basis only.
-8. **Android's `isCachedFor` LRU check is unused** — added for FG-5.1, nothing
+7. **Android's `isCachedFor` LRU check is unused** — added for FG-5.1, nothing
    calls it yet.
 
 ---
@@ -265,8 +281,8 @@ Ordered by how likely they are to bite a consumer.
 
 In the order `to-be-done.md` puts them.
 
-1. **Commit, then `npm run verify:gates`.** Unblocks the gates' own testing.
-   Everything below assumes it.
+1. **Commit.** Everything is still uncommitted against a `0.1.5` baseline, and
+   `verify:gates` (now 6/6) needs a clean tree to run unattended in CI.
 2. **Switch on CI and read the output.** `verify:android:host` and
    `verify:ios:pod` are written and have never executed. FG-3.1 and FG-3.2 close
    on their results.

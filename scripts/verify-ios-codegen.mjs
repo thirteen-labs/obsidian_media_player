@@ -55,19 +55,24 @@ const ok = (rule, detail) => notes.push({ rule, detail });
 // exclude) and is the wrong shape.
 let combineSchemas;
 let RNCodegen;
+let combineMod; // hoisted out of the try: the diagnostic below needs it
 try {
   const codegenRoot = dirname(require.resolve('@react-native/codegen/package.json'));
-  const mod = require(join(codegenRoot, 'lib/cli/combine/combine-js-to-schema.js'));
+  combineMod = require(join(codegenRoot, 'lib/cli/combine/combine-js-to-schema.js'));
 
   combineSchemas =
-    typeof mod === 'function'
-      ? mod // older codegen exported the function directly
-      : mod.combineSchemas ?? mod.default?.combineSchemas ?? mod.default;
+    typeof combineMod === 'function'
+      ? combineMod // older codegen exported the function directly
+      : combineMod.combineSchemas ??
+        combineMod.default?.combineSchemas ??
+        combineMod.default;
 
   RNCodegen = require(join(codegenRoot, 'lib/generators/RNCodegen.js'));
 } catch (e) {
   console.error('Cannot load @react-native/codegen. Is node_modules installed?');
   console.error(e.message);
+  console.error('Every job that runs this gate must run `npm ci` first — see');
+  console.error('.github/workflows/ci.yml.');
   process.exit(1);
 }
 
@@ -78,7 +83,9 @@ if (typeof combineSchemas !== 'function') {
   console.error('Could not resolve a combine function from @react-native/codegen.');
   console.error(
     'combine-js-to-schema.js exports: ' +
-      (typeof mod === 'function' ? '(a bare function)' : Object.keys(mod).join(', '))
+      (typeof combineMod === 'function'
+        ? '(a bare function)'
+        : Object.keys(combineMod ?? {}).join(', '))
   );
   console.error('Expected an export taking an array of absolute spec file paths.');
   process.exit(1);
