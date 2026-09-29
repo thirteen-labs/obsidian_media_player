@@ -1,0 +1,190 @@
+# Three gates, because `npm test` cannot see a single line of the ~1,100 lines
+# of Kotlin and ~1,100 of Swift in this module. FG-0.6.
+#
+#   js       typecheck + lint + test + web bundle   (FG-7.3, ~2 min)
+#   android  Kotlin type-check matrix, then a real Gradle assembleRelease
+#            (FG-0.6 steps 1 and 4-5)
+#   ios      pod lib lint                          (FG-0.6 step 2)
+#
+# The android job deliberately runs BOTH halves. `verify:android` is fast and
+# catches Kotlin errors, but Gradle aborts at `configureCMakeRelWithDebInfo`
+# before Kotlin is ever compiled — so a Kotlin error is invisible while the
+# native build is broken, which is exactly how two hard compile errors and a
+# false `react-native` floor reached published versions. The Gradle half is what
+# covers manifest merging, resource linking, and the CMake/NDK compile.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch supersedes the previous run, but never cancel a
+# run on main — that is where a release is cut from.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  js:
+    name: js (typecheck, lint, test, web bundle)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: typecheck + lint + test + web bundle
+        run: npm run verify
+
+  # Proves the gates above are gates. Runs the fast probes only; the Gradle and
+  # pod probes need macOS/SDK setup and are run manually via `npm run
+  # verify:gates -- --full`, plus once by hand before a release.
+  gate-self-test:
+    name: gate self-test (fast)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - name: install SDK platform
+        run: sdkmanager "platforms;android-35"
+      - name: cache Kotlin verify artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/omp-kotlin-verify
+            ${{ runner.temp }}/omp-kotlin-verify
+          key: kotlin-verify-${{ hashFiles('scripts/verify-android-kotlin.mjs') }}
+          restore-keys: kotlin-verify-
+      - run: npm ci
+      - name: every gate goes red on a known-bad input
+        run: npm run verify:gates
+
+  android:
+    name: android (Kotlin matrix + Gradle assembleRelease)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      # NDK and CMake are pinned to what the RN 0.74 template asks the module to
+      # use. The module reads `ndkVersion` from the host's rootProject.ext, so
+      # these have to match the scaffolded app or the module silently falls back
+      # to a second NDK — which is the bug the comment at the top of
+      # android/build.gradle is about.
+      - name: install NDK + CMake + platform
+        run: |
+          sdkmanager \
+            "platforms;android-35" \
+            "platform-tools" \
+            "ndk;26.1.10909125" \
+            "cmake;3.22.1"
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+      # The first run downloads the NDK (~2 GB), CMake and every media3 AAR. An
+      # uncached job is the kind of timeout that gets disabled "temporarily" and
+      # then forgotten, so both caches are load-bearing.
+      - name: cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-android-${{ hashFiles('android/build.gradle') }}-${{ runner.os }}
+          restore-keys: gradle-android-${{ runner.os }}
+
+      # verify:android caches resolved jars in os.tmpdir(); cache both spellings
+      # because the runner's TMPDIR is not guaranteed to be /tmp.
+      - name: cache Kotlin verify artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/omp-kotlin-verify
+            ${{ runner.temp }}/omp-kotlin-verify
+          key: kotlin-verify-${{ hashFiles('scripts/verify-android-kotlin.mjs') }}
+          restore-keys: kotlin-verify-
+
+      - run: npm ci
+
+      - name: Kotlin type-check across the RN version matrix
+        run: npm run verify:android
+
+      # Scaffolds a throwaway RN host app, autolinks this module into it, and
+      # runs `:obsidian-media-player:assembleRelease`. Needs the app: the module
+      # resolves ndkVersion/compileSdkVersion/ABIs from rootProject.ext, so it
+      # cannot be built standalone.
+      - name: Gradle assembleRelease in a host app
+        run: npm run verify:android:host
+
+      # An NDK/CMake failure here is usually a real finding, not flake, because
+      # the AAR assertion in the script catches a build that exits 0 without
+      # producing one.
+      - name: upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-log
+          path: ~/.gradle/daemon/**/*.log
+          if-no-files-found: ignore
+
+  ios:
+    name: ios (pod lib lint)
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # The runner ships a CocoaPods, but not a predictable one. Pinning it keeps
+      # a pod lint from going red because of a lint change upstream.
+      - name: install CocoaPods
+        run: sudo gem install cocoapods --no-document
+
+      - name: cache CocoaPods specs
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/CocoaPods
+          key: cocoapods-${{ runner.os }}
+          restore-keys: cocoapods-${{ runner.os }}
+
+      # Codegen cross-check first, and it is not just `pod lib lint` padding.
+      # The iOS half of Wave 3 was four separate hard build failures that no
+      # other gate could see, because nothing compiled Swift until now: a
+      # protocol name codegen never emits (`ObsidianAudioSpec` vs
+      # `NativeObsidianAudioSpec`), a podspec naming a pod that does not exist
+      # (`ReactCodegen`), eight video commands with no `RCT_EXPORT_METHOD`, and
+      # a bridging header importing an Objective-C++-only header. Runs on
+      # ubuntu in the `verify` job too; repeated here so a macOS-only red has
+      # a cheap explanation. See to-be-done.md FG-3.1.
+      - name: codegen / native registration cross-check
+        run: npm run verify:ios
+
+      - name: pod lib lint
+        run: npm run verify:ios:pod

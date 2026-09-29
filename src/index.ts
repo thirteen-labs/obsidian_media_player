@@ -16,6 +16,7 @@ export { usePlaybackState } from './hooks/usePlaybackState';
 export type { PlaybackDerived } from './hooks/usePlaybackState';
 export { useRemoteControls } from './hooks/useRemoteControls';
 export type { RemoteCommand } from './hooks/useRemoteControls';
+export { useDownload } from './hooks/useDownload';
 
 export { MediaProvider, useMedia } from './context/MediaProvider';
 export type { MediaProviderProps } from './context/MediaProvider';
@@ -32,8 +33,11 @@ export {
 } from './core/PlaylistManager';
 export type { QueueState } from './core/PlaylistManager';
 export { CastManager, castManager } from './core/CastManager';
+export type { CastProvider } from './core/CastManager';
 export { DownloadManager } from './core/DownloadManager';
-export type { DownloadInfo } from './core/DownloadManager';
+// `DownloadInfo` is not re-exported here: it now lives in `src/types.ts`, which
+// line 1 already re-exports in full. Two export statements for one name is the
+// kind of drift FG-1.5 / FG-2.3 removed elsewhere.
 
 export { default as AudioNative } from './native/AudioNative';
 export { default as MusicPlayerNative } from './native/MusicPlayerNative';

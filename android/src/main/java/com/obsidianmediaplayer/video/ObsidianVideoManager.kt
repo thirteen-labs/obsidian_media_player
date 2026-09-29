@@ -32,6 +32,16 @@ class ObsidianVideoManager : SimpleViewManager<ObsidianVideoView>() {
         reactContext.getJSModule(com.facebook.react.uimanager.events.RCTEventEmitter::class.java)
           .receiveEvent(view.id, "onEnded", null)
       }
+      // Fires once on entry to STATE_BUFFERING and once on exit. The
+      // registration below ("onBuffering") has existed since 0.1.x but nothing
+      // ever invoked it, so the prop was dead on Android. See to-be-done.md
+      // FG-0.4c.
+      view.onBuffering = { buffered ->
+        reactContext.getJSModule(com.facebook.react.uimanager.events.RCTEventEmitter::class.java)
+          .receiveEvent(view.id, "onBuffering", com.facebook.react.bridge.Arguments.createMap().apply {
+            putDouble("buffered", buffered)
+          })
+      }
       view.onError = { msg ->
         reactContext.getJSModule(com.facebook.react.uimanager.events.RCTEventEmitter::class.java)
           .receiveEvent(view.id, "onError", com.facebook.react.bridge.Arguments.createMap().apply {

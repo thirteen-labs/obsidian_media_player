@@ -1,10 +1,12 @@
 package com.obsidianmediaplayer.video
 
 import android.content.Context
+import android.graphics.Matrix
 import android.view.TextureView
 import android.widget.FrameLayout
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
 import com.obsidianmediaplayer.core.ExoPlayerProvider
 import org.json.JSONObject
@@ -21,12 +23,26 @@ class ObsidianVideoView(context: Context) : FrameLayout(context) {
   var onProgress: ((Double, Double) -> Unit)? = null
   var onEnded: (() -> Unit)? = null
   var onError: ((String) -> Unit)? = null
+  var onBuffering: ((Double) -> Unit)? = null
+
+  // Edge-triggered: `onBuffering` fires only on entry to / exit from
+  // STATE_BUFFERING, not on every state change that happens to be a buffer.
+  // Without this, a stalling stream re-fires on each transition and the host
+  // app re-renders continuously.
+  private var wasBuffering = false
 
   private var lastState = mutableMapOf<String, Any>(
     "status" to "idle", "position" to 0.0, "duration" to 0.0,
     "rate" to 1.0, "muted" to false, "volume" to 1.0,
     "buffered" to 0.0, "inBackground" to false
   )
+
+  // Intrinsic video dimensions, reported by ExoPlayer once the first frame is
+  // decoded. Both are 0 before that and after an error, so every consumer must
+  // bail out rather than divide.
+  private var videoWidth = 0
+  private var videoHeight = 0
+  private var resizeMode = "contain"
 
   private val progressRunnable = object : Runnable {
     override fun run() {
@@ -50,6 +66,11 @@ class ObsidianVideoView(context: Context) : FrameLayout(context) {
           Player.STATE_ENDED -> "ended"
           else -> "loading"
         }
+        val buffering = state == Player.STATE_BUFFERING
+        if (buffering != wasBuffering) {
+          wasBuffering = buffering
+          onBuffering?.invoke(lastState["buffered"] as? Double ?: 0.0)
+        }
         if (state == Player.STATE_ENDED) onEnded?.invoke()
         emitState()
       }
@@ -62,6 +83,13 @@ class ObsidianVideoView(context: Context) : FrameLayout(context) {
       override fun onIsPlayingChanged(isPlaying: Boolean) {
         lastState["status"] = if (isPlaying) "playing" else "paused"
         emitState()
+      }
+      // Fires when the stream's resolution changes too, not just on first
+      // frame — a live HLS ladder switch re-lays out here.
+      override fun onVideoSizeChanged(videoSize: VideoSize) {
+        videoWidth = videoSize.width
+        videoHeight = videoSize.height
+        applyResizeMode()
       }
     })
     // Poll progress ~4 Hz on the UI thread
@@ -76,9 +104,16 @@ class ObsidianVideoView(context: Context) : FrameLayout(context) {
     } ?: emptyMap()
     val type = obj.optString("type").takeIf { it.isNotEmpty() }
     val cacheable = obj.optBoolean("cacheable", true)
-    val drmLicenseUri = obj.optString("drmLicenseUri").takeIf { it.isNotEmpty() }
     val mediaItem = MediaItem.Builder().setUri(uri).build()
-    val source = ExoPlayerProvider.buildMediaSource(context, mediaItem, headers, type, cacheable, drmLicenseUri)
+    val source = ExoPlayerProvider.buildMediaSource(context, mediaItem, headers, type, cacheable)
+    // A new source may have different dimensions; drop the stale ones so
+    // applyResizeMode() cannot scale against the previous video until
+    // onVideoSizeChanged fires for the new one.
+    videoWidth = 0
+    videoHeight = 0
+    textureView.setTransform(Matrix())
+    // Re-arm the buffering edge so the first stall of a new source is reported.
+    wasBuffering = false
     player.setMediaSource(source)
     player.prepare()
     lastState["status"] = "loading"
@@ -92,7 +127,47 @@ class ObsidianVideoView(context: Context) : FrameLayout(context) {
     lastState["rate"] = rate
     player.setPlaybackParameters(androidx.media3.common.PlaybackParameters(rate.toFloat()))
   }
-  fun setResizeMode(mode: String) { /* TextureView scale: contain/cover handled by matrix */ }
+  /**
+   * Scale the TextureView to honour `resizeMode`.
+   *
+   * A TextureView always renders its buffer stretched to the view bounds, so
+   * every mode except `stretch` is expressed as a uniform scale about the
+   * view centre. `cover` deliberately overflows and clips.
+   *
+   * Mirrors ObsidianVideoPlayer.applyResizeMode() on iOS, with the caveat that
+   * iOS maps `none` to AVPlayerLayer.videoGravity = .resize because
+   * AVPlayerLayer has no true "no scaling" mode.
+   */
+  fun setResizeMode(mode: String) {
+    resizeMode = mode
+    applyResizeMode()
+  }
+
+  private fun applyResizeMode() {
+    val viewW = width
+    val viewH = height
+    if (viewW == 0 || viewH == 0 || videoWidth == 0 || videoHeight == 0) return
+
+    val m = Matrix()
+    val cx = viewW / 2f
+    val cy = viewH / 2f
+    when (resizeMode) {
+      "cover" -> {
+        val s = maxOf(viewW.toFloat() / videoWidth, viewH.toFloat() / videoHeight)
+        m.setScale(s, s, cx, cy)
+      }
+      "stretch" -> {
+        m.setScale(viewW.toFloat() / videoWidth, viewH.toFloat() / videoHeight, cx, cy)
+      }
+      "none" -> m.setScale(1f, 1f, cx, cy)
+      else -> { // "contain" and any unknown value
+        val s = minOf(viewW.toFloat() / videoWidth, viewH.toFloat() / videoHeight)
+        m.setScale(s, s, cx, cy)
+      }
+    }
+    textureView.setTransform(m)
+  }
+
   fun setRepeat(repeat: Boolean) { player.repeatMode = if (repeat) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF }
 
   // Commands
@@ -118,10 +193,17 @@ class ObsidianVideoView(context: Context) : FrameLayout(context) {
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
     player.setVideoTextureView(textureView)
+    applyResizeMode()
   }
 
   override fun onDetachedFromWindow() {
     player.clearVideoTextureView(textureView)
     super.onDetachedFromWindow()
+  }
+
+  override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+    super.onSizeChanged(w, h, oldw, oldh)
+    // Rotation, split-screen, or a parent re-layout.
+    applyResizeMode()
   }
 }

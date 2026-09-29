@@ -4,23 +4,15 @@ import React, {
   useRef,
   useState,
   useCallback,
-  type Ref,
+  useEffect,
 } from 'react';
 import ObsidianVideo, { VideoCommands } from '../native/VideoNative';
 import { INITIAL_STATE, parseState, sourceToJson } from '../utils/media';
-import type { PlaybackState, VideoProps } from '../types';
+import type { PlaybackState, VideoHandle, VideoProps } from '../types';
 
-export interface VideoHandle {
-  play: () => void;
-  pause: () => void;
-  stop: () => void;
-  seek: (seconds: number) => void;
-  setRate: (rate: number) => void;
-  setVolume: (volume: number) => void;
-  setMuted: (muted: boolean) => void;
-  setResizeMode: (mode: string) => void;
-  getState: () => PlaybackState;
-}
+// Re-exported for backwards compatibility; the definition is shared with the
+// web build so the two cannot drift.
+export type { VideoHandle };
 
 export const Video = forwardRef<VideoHandle, VideoProps>(function Video(
   {
@@ -39,22 +31,67 @@ export const Video = forwardRef<VideoHandle, VideoProps>(function Video(
   },
   ref
 ) {
-  const innerRef = useRef<VideoHandle | null>(null);
+  const innerRef = useRef<any>(null);
   const [state, setState] = useState<PlaybackState>(INITIAL_STATE);
+
+  // `getState()` is synchronous, so it must report the most recent native
+  // emission. Reading `state` from the handle closure froze the answer at
+  // whichever render last rebuilt the handle — and the handle was rebuilt on
+  // every state change, so any consumer holding an older handle kept seeing
+  // stale data. The ref gives a *stable* handle that always answers from the
+  // live value. See to-be-done.md FG-1.3.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  // Callers of `flush()` waiting on the next native emission.
+  const pendingFlushes = useRef<
+    Array<{
+      resolve: (s: PlaybackState) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }>
+  >([]);
+
+  const settleFlushes = useCallback((next: PlaybackState) => {
+    const pending = pendingFlushes.current;
+    pendingFlushes.current = [];
+    pending.forEach((p) => {
+      clearTimeout(p.timer);
+      p.resolve(next);
+    });
+  }, []);
+
+  const flush = useCallback(
+    (timeoutMs = 1000) =>
+      new Promise<PlaybackState>((resolve) => {
+        // Bounded on purpose: an idle, paused or ended player emits no state
+        // changes, so an unbounded flush() would hang forever.
+        const timer = setTimeout(() => resolve(stateRef.current), timeoutMs);
+        pendingFlushes.current.push({ resolve, timer });
+      }),
+    []
+  );
+
+  useEffect(
+    () => () => {
+      pendingFlushes.current.forEach((p) => clearTimeout(p.timer));
+      pendingFlushes.current = [];
+    },
+    []
+  );
 
   const emit = useCallback(
     (type: any, payload?: Record<string, unknown>, s?: PlaybackState) => {
-      const next = s ?? state;
+      const next = s ?? stateRef.current;
       if (s) setState(s);
       onEvent?.({ type, state: next, payload });
     },
-    [onEvent, state]
+    [onEvent]
   );
 
   useImperativeHandle(
     ref,
     (): VideoHandle => ({
-      play: () => VideoCommands.play(innerRef.current as unknown),
+      play: () => VideoCommands.play(innerRef.current),
       pause: () => VideoCommands.pause(innerRef.current),
       stop: () => VideoCommands.stop(innerRef.current),
       seek: (seconds) => VideoCommands.seek(innerRef.current, seconds),
@@ -62,13 +99,15 @@ export const Video = forwardRef<VideoHandle, VideoProps>(function Video(
       setVolume: (v) => VideoCommands.setVolume(innerRef.current, v),
       setMuted: (m) => VideoCommands.setMuted(innerRef.current, m),
       setResizeMode: (mode) => VideoCommands.setResizeMode(innerRef.current, mode),
-      getState: () => state,
+      getState: () => stateRef.current,
+      flush,
     }),
-    [state]
+    [flush]
   );
 
   return (
     <ObsidianVideo
+      ref={innerRef}
       style={[{ width: '100%', height: 200 }, style]}
       sourceJson={sourceToJson(source)}
       paused={paused}
@@ -83,6 +122,7 @@ export const Video = forwardRef<VideoHandle, VideoProps>(function Video(
           setState(parsed);
           onStateChange?.(parsed);
           emit('state', undefined, parsed);
+          settleFlushes(parsed);
         }
         if (autoPlay && parsed?.status === 'ready') VideoCommands.play(innerRef.current);
       }}

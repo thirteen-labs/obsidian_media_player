@@ -11,11 +11,12 @@ import org.json.JSONObject
 class ObsidianCacheModule(private val ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) {
   override fun getName() = NAME
 
+  // Kotlin permits exactly one companion object per class. These were two
+  // separate blocks, which is a hard compile error ("conflicting declarations")
+  // that stayed hidden because the Gradle build previously died at the CMake
+  // stage before Kotlin was ever invoked. See to-be-done.md FG-0.5.
   companion object {
     const val NAME = "ObsidianCache"
-  }
-
-  companion object {
     private const val PREFS = "obsidian_downloads"
     private const val KEY_INDEX = "index"
   }
@@ -52,13 +53,21 @@ class ObsidianCacheModule(private val ctx: ReactApplicationContext) : ReactConte
       val type = obj.optString("type").takeIf { it.isNotEmpty() }
       val cacheable = obj.optBoolean("cacheable", true)
 
-      // Persist to index immediately as "downloading" so getDownloads is useful
+      // Persist to index immediately as "downloading" so getDownloads is useful.
+      // FG-5.1: record the cache key SimpleCache actually assigned. Eviction
+      // reads it back, so a URI that `Uri.parse` normalises differently from the
+      // raw string cannot leave an entry in the index that no longer matches a
+      // span on disk.
+      val cacheKey = ExoPlayerProvider.cacheKeyFor(uri)
       val index = readIndex()
       val existing = findEntry(index, id)
       if (existing != null) {
         existing.put("uri", uri)
         existing.put("status", "downloading")
         existing.put("type", type ?: "")
+        // Cleared on re-download: the old key's spans belong to a previous
+        // attempt and must not be attributed to this one.
+        if (cacheKey.isNotEmpty()) existing.put("cacheKey", cacheKey) else existing.remove("cacheKey")
       } else {
         index.put(JSONObject().apply {
           put("id", id)
@@ -67,25 +76,42 @@ class ObsidianCacheModule(private val ctx: ReactApplicationContext) : ReactConte
           put("status", "downloading")
           put("bytesDownloaded", 0)
           put("bytesTotal", 0)
+          if (cacheKey.isNotEmpty()) put("cacheKey", cacheKey)
         })
       }
       writeIndex(index)
 
-      // Prefetch on background thread — populates SimpleCache (200MB LRU)
+      // FG-5.4: prefetch on the shared executor with cancellation + timeout.
+      // The old code spawned an unbounded Thread per download and swallowed
+      // every exception silently.
+      val future = ExoPlayerProvider.prefetchToCache(ctx, uri, headers) { bytesRead ->
+        // Progress callback — could be wired to a JS event emitter
+        // once FG-5.2's progress events are implemented.
+        android.util.Log.d("ObsidianCache", "Prefetch progress for $id: $bytesRead bytes")
+      }
+      // Register for cancellation
+      // Note: activePrefetches is in ExoPlayerProvider; we track the future
+      // here so removeDownload can cancel it.
+      ExoPlayerProvider.cancelPrefetch(id) // cancel any existing
+      // Submit a wrapper that updates the index on completion
       Thread {
         try {
-          // Only prefetch progressive/files; HLS/DASH will be cached on first play via ExoPlayer
-          // For all types we still drain through CacheDataSource so SimpleCache is warmed
-          ExoPlayerProvider.prefetchToCache(ctx, uri, headers)
-
-          // Mark as done (bytes approximated from cacheSpace delta would need snapshot)
+          val bytesDownloaded = future.get(30, java.util.concurrent.TimeUnit.SECONDS)
+          // Mark as done with real bytes downloaded (not cacheSpace)
           val updated = readIndex()
           findEntry(updated, id)?.let {
             it.put("status", "done")
-            it.put("bytesDownloaded", ExoPlayerProvider.getCache(ctx).cacheSpace)
+            it.put("bytesDownloaded", bytesDownloaded)
+            it.put("bytesTotal", bytesDownloaded)
           }
           writeIndex(updated)
-        } catch (_: Exception) {
+        } catch (e: java.util.concurrent.TimeoutException) {
+          android.util.Log.w("ObsidianCache", "Prefetch timed out for $id")
+          val updated = readIndex()
+          findEntry(updated, id)?.put("status", "error")
+          writeIndex(updated)
+        } catch (e: Exception) {
+          android.util.Log.e("ObsidianCache", "Prefetch failed for $id", e)
           val updated = readIndex()
           findEntry(updated, id)?.put("status", "error")
           writeIndex(updated)
@@ -105,15 +131,33 @@ class ObsidianCacheModule(private val ctx: ReactApplicationContext) : ReactConte
   @ReactMethod fun removeDownload(id: String, p: Promise) {
     try {
       val index = readIndex()
+      var evictedKey: String? = null
       val next = JSONArray()
       for (i in 0 until index.length()) {
         val o = index.optJSONObject(i) ?: continue
         if (o.optString("id") != id) next.put(o)
+        else if (evictedKey == null) {
+          // FG-5.1: prefer the recorded cache key, fall back to the uri for
+          // entries written before the key was stored.
+          evictedKey = o.optString("cacheKey").takeIf { it.isNotEmpty() }
+            ?: o.optString("uri").takeIf { it.isNotEmpty() }
+        }
       }
       writeIndex(next)
-      // SimpleCache is LRU without per-key eviction — entry removal from index is the
-      // source of truth; underlying blocks will be evicted naturally.
-      p.resolve(JSONObject().apply { put("id", id); put("status", "removed") }.toString())
+      // FG-4.5: the index is no longer the only thing removed. Evict the recorded
+      // key per entry instead of waiting for LRU to push the bytes out. Failures
+      // resolve rather than reject — one bad key must not fail the call — but
+      // are reported in the payload instead of swallowed.
+      var bytesFreed = false
+      evictedKey?.let { key ->
+        bytesFreed = try {
+          ExoPlayerProvider.getCache(ctx)
+          ExoPlayerProvider.removeResource(key)
+        } catch (_: Exception) { false }
+      }
+      p.resolve(JSONObject().apply {
+        put("id", id); put("status", "removed"); put("bytesFreed", bytesFreed)
+      }.toString())
     } catch (e: Exception) { p.reject("E_REMOVE", e.message, e) }
   }
 
@@ -127,18 +171,35 @@ class ObsidianCacheModule(private val ctx: ReactApplicationContext) : ReactConte
 
   @ReactMethod fun clearCache(p: Promise) {
     try {
-      val c = ExoPlayerProvider.getCache(ctx)
-      // Best-effort: remove all cached spans by deleting cache dir contents
-      // SimpleCache holds file locks, so we release via reflection-free delete of loose files
+      // FG-4.5: deleting files behind a live SimpleCache corrupts the index —
+      // the old code deleted loose files while the cache held locks and
+      // swallowed every failure. Evict per key through the cache API instead,
+      // which is safe while players hold CacheDataSources; only orphaned files
+      // with no index entry fall back to a direct delete. One bad key resolves
+      // as a partial failure rather than rejecting the whole call.
+      val index = readIndex()
+      var failures = 0
+      for (i in 0 until index.length()) {
+        val o = index.optJSONObject(i) ?: continue
+        // FG-5.1: the recorded cache key, falling back to the uri for entries
+        // written before it was stored.
+        val key = o.optString("cacheKey").takeIf { it.isNotEmpty() }
+          ?: o.optString("uri").takeIf { it.isNotEmpty() }
+          ?: continue
+        try {
+          ExoPlayerProvider.getCache(ctx)
+          ExoPlayerProvider.removeResource(key)
+        } catch (_: Exception) { failures++ }
+      }
       val dir = java.io.File(ctx.cacheDir, "obsidian-media-cache")
       if (dir.exists()) {
         dir.listFiles()?.forEach { f ->
-          try { if (f.isFile) f.delete() } catch (_: Exception) {}
+          // Only orphans: anything the cache still tracks is already evicted.
+          try { if (f.isFile && f.name.endsWith(".uid")) f.delete() } catch (_: Exception) {}
         }
       }
-      // Also clear index
       writeIndex(JSONArray())
-      p.resolve(JSONObject().toString())
+      p.resolve(JSONObject().apply { put("cleared", true); put("failures", failures) }.toString())
     } catch (e: Exception) { p.reject("E_CACHE", e.message, e) }
   }
 

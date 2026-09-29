@@ -1,41 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
 import { NativeEventEmitter } from 'react-native';
+import { DownloadManager } from '../core/DownloadManager';
 import MusicPlayerNative from '../native/MusicPlayerNative';
 import { MUSIC_EVENTS } from '../core/Events';
 import { INITIAL_STATE, parseState, tracksToJson } from '../utils/media';
 import type {
+  MusicControls,
   PlaybackState,
-  RemoteControlOptions,
-  RepeatMode,
+  QueueSnapshot,
   Track,
 } from '../types';
 
-export interface QueueSnapshot {
-  tracks: Track[];
-  index: number;
-}
-
-export interface MusicControls {
-  setQueue: (tracks: Track[]) => void;
-  addTracks: (tracks: Track[]) => void;
-  removeTrack: (id: string) => void;
-  skipTo: (index: number) => void;
-  next: () => void;
-  previous: () => void;
-  play: () => void;
-  pause: () => void;
-  stop: () => void;
-  seek: (seconds: number) => void;
-  setRate: (rate: number) => void;
-  setVolume: (volume: number) => void;
-  setMuted: (muted: boolean) => void;
-  setRepeatMode: (mode: RepeatMode) => void;
-  setShuffle: (shuffle: boolean) => void;
-  setRemoteControls: (options: RemoteControlOptions) => void;
-  setBackgroundEnabled: (enabled: boolean) => void;
-  getQueue: () => Promise<QueueSnapshot | null>;
-  getState: () => Promise<PlaybackState | null>;
-}
+// Re-exported so existing `from './hooks/useMusicPlayer'` imports keep working.
+// The definitions live in `types.ts` so the web build can share them — see
+// to-be-done.md FG-2.1.
+export type { MusicControls, QueueSnapshot };
 
 export function useMusicPlayer(initialTracks: Track[] = []): {
   state: PlaybackState;
@@ -69,31 +48,68 @@ export function useMusicPlayer(initialTracks: Track[] = []): {
         tracks: e?.tracks ?? prev.tracks,
         index: e?.index ?? prev.index,
       }));
+    // Both platforms emit these (Android `ObsidianMusicPlayerModule.kt:153`,
+    // iOS `:125`) and both were unsubscribed, so a finished queue was
+    // indistinguishable from a pause and a player error was silent.
+    const onEnded = () =>
+      setState((prev) => ({ ...prev, status: 'ended', position: prev.duration }));
+    const onError = (e: any) =>
+      setState((prev) => ({ ...prev, status: 'error', error: e?.message }));
 
-    const subs = [
-      emitter.addListener(MUSIC_EVENTS.STATE, onState),
-      emitter.addListener(MUSIC_EVENTS.PROGRESS, onProgress),
-      emitter.addListener(MUSIC_EVENTS.TRACK_CHANGE, onTrackChange),
-      emitter.addListener(MUSIC_EVENTS.QUEUE_CHANGE, onQueueChange),
+    // Single source of truth for which events this hook handles. Keeps the
+    // handler mapping and the event list from drifting apart, and is what
+    // previously hid two unsubscribed events (`onEnded`, `onError`) behind a
+    // hardcoded listener count. See to-be-done.md FG-1.4.
+    const subscriptions: Array<[string, (e: any) => void]> = [
+      [MUSIC_EVENTS.STATE, onState],
+      [MUSIC_EVENTS.PROGRESS, onProgress],
+      [MUSIC_EVENTS.TRACK_CHANGE, onTrackChange],
+      [MUSIC_EVENTS.QUEUE_CHANGE, onQueueChange],
+      [MUSIC_EVENTS.ENDED, onEnded],
+      [MUSIC_EVENTS.ERROR, onError],
     ];
 
-    [
-      MUSIC_EVENTS.STATE,
-      MUSIC_EVENTS.PROGRESS,
-      MUSIC_EVENTS.TRACK_CHANGE,
-      MUSIC_EVENTS.QUEUE_CHANGE,
-    ].forEach((name) => MusicPlayerNative.addListener(name));
+    // No manual `addListener` / `removeListeners` bookkeeping: because the
+    // emitter was constructed *with* the native module, `NativeEventEmitter`
+    // already forwards both for us (`NativeEventEmitter.js:80,90`). Calling
+    // them by hand as well double-counted every subscription — 12 adds and 7
+    // removes for 6 listeners — which misreports listener counts to the native
+    // side on both platforms.
+    const subs = subscriptions.map(([name, handler]) =>
+      emitter.addListener(name, handler)
+    );
 
     return () => {
       subs.forEach((s) => s.remove());
-      MusicPlayerNative.removeListeners(4);
     };
   }, []);
 
   const controls = useRef<MusicControls>({
-    setQueue: (tracks) => {
-      setQueueState((prev) => ({ ...prev, tracks }));
-      MusicPlayerNative.setQueue(tracksToJson(tracks));
+    setQueue: async (tracks) => {
+      // Resolve each track's URI to a local cached copy if available, so the
+      // native player can play offline content.
+      const resolvedTracks = await Promise.all(
+        tracks.map(async (track) => {
+          // `cacheable: false` is the existing opt-out. to-be-done.md FG-5.1
+          // step 6 proposed adding a second `preferCache` flag, which would have
+          // duplicated it: the flag is already in the public `MediaSource` type
+          // and already threaded to both players
+          // (`buildDataSourceFactory(context, cacheable)` on Android,
+          // `ObsidianVideoPlayer.load(_:headers:cacheable:)` on iOS). It just
+          // was not honoured *here*, so a source the player was told not to cache
+          // would still be rewritten to a local copy.
+          const cachedUri =
+            track.source.cacheable === false
+              ? null
+              : await DownloadManager.resolveUri(track.id);
+          return {
+            ...track,
+            source: { ...track.source, uri: cachedUri || track.source.uri },
+          };
+        })
+      );
+      setQueueState((prev) => ({ ...prev, tracks: resolvedTracks }));
+      MusicPlayerNative.setQueue(tracksToJson(resolvedTracks));
     },
     addTracks: (tracks) => MusicPlayerNative.addTracks(tracksToJson(tracks)),
     removeTrack: (id) => MusicPlayerNative.removeTrack(id),

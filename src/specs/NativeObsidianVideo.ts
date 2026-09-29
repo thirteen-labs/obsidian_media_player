@@ -1,9 +1,9 @@
-import type { ViewProps } from 'react-native';
+import * as React from 'react';
+import type { HostComponent, ViewProps } from 'react-native';
 import type {
   Double,
   WithDefault,
   DirectEventHandler,
-  Int32,
 } from 'react-native/Libraries/Types/CodegenTypes';
 import codegenNativeComponent from 'react-native/Libraries/Utilities/codegenNativeComponent';
 import codegenNativeCommands from 'react-native/Libraries/Utilities/codegenNativeCommands';
@@ -33,18 +33,32 @@ export interface NativeProps extends ViewProps {
   onBuffering?: DirectEventHandler<BufferingEvent>;
   onEnded?: DirectEventHandler<null>;
   onError?: DirectEventHandler<ErrorEvent>;
-  onVideoReady?: DirectEventHandler<Readonly<{ width: Int32; height: Int32 }>>;
 }
 
 export interface NativeCommands {
-  play: (viewRef: unknown) => void;
-  pause: (viewRef: unknown) => void;
-  stop: (viewRef: unknown) => void;
-  seek: (viewRef: unknown, seconds: Double) => void;
-  setRate: (viewRef: unknown, rate: Double) => void;
-  setVolume: (viewRef: unknown, volume: Double) => void;
-  setMuted: (viewRef: unknown, muted: boolean) => void;
-  setResizeMode: (viewRef: unknown, mode: string) => void;
+  play: (viewRef: React.ElementRef<HostComponent<NativeProps>>) => void;
+  pause: (viewRef: React.ElementRef<HostComponent<NativeProps>>) => void;
+  stop: (viewRef: React.ElementRef<HostComponent<NativeProps>>) => void;
+  seek: (
+    viewRef: React.ElementRef<HostComponent<NativeProps>>,
+    seconds: Double,
+  ) => void;
+  setRate: (
+    viewRef: React.ElementRef<HostComponent<NativeProps>>,
+    rate: Double,
+  ) => void;
+  setVolume: (
+    viewRef: React.ElementRef<HostComponent<NativeProps>>,
+    volume: Double,
+  ) => void;
+  setMuted: (
+    viewRef: React.ElementRef<HostComponent<NativeProps>>,
+    muted: boolean,
+  ) => void;
+  setResizeMode: (
+    viewRef: React.ElementRef<HostComponent<NativeProps>>,
+    mode: string,
+  ) => void;
 }
 
 export const Commands = codegenNativeCommands<NativeCommands>({
@@ -60,4 +74,6 @@ export const Commands = codegenNativeCommands<NativeCommands>({
   ],
 });
 
-export default codegenNativeComponent<NativeProps>('ObsidianVideo');
+export default codegenNativeComponent<NativeProps>(
+  'ObsidianVideo',
+) as HostComponent<NativeProps>;

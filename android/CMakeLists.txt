@@ -25,6 +25,18 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 project(ObsidianMediaPlayerSpec)
 
+# These two are resolved through AGP's prefab mechanism. Unlike an app module,
+# a `com.android.library` module gets nothing injected for it by
+# `react-native-gradle-plugin` (it only sets `prefab = true` and passes
+# `-DREACT_ANDROID_DIR` for `com.android.application`), so the library itself
+# must declare `buildFeatures { prefab = true }` in its build.gradle. ReactAndroid
+# publishes the prefab packages (see node_modules/react-native/ReactAndroid/
+# build.gradle -> `buildFeatures { prefab true }`); fbjni arrives transitively
+# through react-android's `api` dependency.
+#
+# If this ever fails with
+#   "Could not find a package configuration file provided by ReactAndroid"
+# the cause is a missing `prefab = true` in ../build.gradle, not this file.
 find_package(ReactAndroid REQUIRED CONFIG)
 find_package(fbjni REQUIRED CONFIG)
 
@@ -37,8 +49,14 @@ add_library(
 target_include_directories(
   ${CMAKE_PROJECT_NAME}
   PUBLIC
-    src/main/jni
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/main/jni
 )
+
+# `-Werror` is opt-in. The host pins a single NDK revision, but the app itself
+# may move it, and a JNI shim that only does `JNI_OnLoad` is not worth failing
+# a release build over. Opt in with -DOMP_ENABLE_WERROR=ON in a local build or
+# in CI when you want the strict pass.
+option(OMP_ENABLE_WERROR "Treat C/C++ warnings as errors" OFF)
 
 target_compile_options(
   ${CMAKE_PROJECT_NAME}
@@ -47,9 +65,13 @@ target_compile_options(
     -frtti
     -std=c++17
     -Wall
-    -Werror
-    -Wno-error=cpp
+    -Wextra
+    -Wno-unused-parameter
 )
+
+if(OMP_ENABLE_WERROR)
+  target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE -Werror)
+endif()
 
 target_link_libraries(
   ${CMAKE_PROJECT_NAME}
@@ -66,9 +88,12 @@ target_link_libraries(
 # Guarded so Paper / Old Architecture builds keep working when Codegen has not
 # produced output (e.g. newArchEnabled=false).
 set(CODEGEN_JNI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/build/generated/source/codegen/jni)
-if(EXISTS ${CODEGEN_JNI_DIR}/CMakeLists.txt)
+# Quoted: the checkout path can legitimately contain spaces (e.g. a Windows
+# "C:\Users\<First Last>\..." checkout), which would otherwise split into
+# multiple arguments and produce a confusing "not an existing directory" error.
+if(EXISTS "${CODEGEN_JNI_DIR}/CMakeLists.txt")
   # The generated target declares its own INTERFACE include directories, so
   # linking is sufficient — no manual target_include_directories needed.
-  add_subdirectory(${CODEGEN_JNI_DIR} codegen_ObsidianMediaPlayerSpec_build)
+  add_subdirectory("${CODEGEN_JNI_DIR}" codegen_ObsidianMediaPlayerSpec_build)
   target_link_libraries(${CMAKE_PROJECT_NAME} react_codegen_ObsidianMediaPlayerSpec)
 endif()

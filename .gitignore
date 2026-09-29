@@ -6,6 +6,7 @@ lib/
 .vscode/
 coverage/
 dist/
+web-dist/
 build/
 *.tgz
 .example/

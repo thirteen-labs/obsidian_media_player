@@ -1,47 +1,120 @@
-buildscript {
-    ext.getExtOrDefault = { name ->
-        return rootProject.ext.has(name) ? rootProject.ext.get(name) : project.properties["ObsidianMediaPlayer_" + name]
-    }
-
-    repositories {
-        google()
-        mavenCentral()
-    }
-
-    dependencies {
-        classpath("com.android.tools.build:gradle:8.1.1")
-        // The version of Kotlin used here must match the version used by the
-        // consuming app (Lumora uses Kotlin 2.1.20). The react-native-gradle-plugin
-        // resolves `kotlinVersion` from the root project when available (Expo's
-        // android template defines it); the fallback only applies if it is missing.
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:${getExtOrDefault('kotlinVersion') ?: '2.1.20'}")
-        classpath("com.facebook.react:react-native-gradle-plugin")
-    }
-}
-
+// PLUGIN APPLICATION
+// This library is only ever consumed from inside an app (it is autolinked via
+// `react-native.config.js`), so AGP, the Kotlin plugin and `com.facebook.react`
+// are already on the *root* buildscript classpath. This file previously declared
+// its own `buildscript { }` block with `com.android.tools.build:gradle:8.1.1`,
+// which drags a second, much older AGP into the subproject classpath. The
+// observable symptom in CI was a *second* NDK download scoped to this project
+// (27.0.12077973) while the app was building with 27.1.12297006 — i.e. the
+// module silently fell back to AGP's default NDK instead of the app's.
+// `apply plugin:` below resolves the plugins from the parent classloader, which
+// is the supported pattern for React Native libraries.
 apply plugin: "com.android.library"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
+
+// Read a value from the consuming app when it exposes it (both the React Native
+// template and Expo's prebuild define these on the root project's `ext`), and
+// otherwise fall back to a value that is valid for React Native 0.76+.
+// `ObsidianMediaPlayer_<name>` in android/gradle.properties overrides the
+// fallback, so a host can pin the module without patching this file.
+def resolveHostValue = { String name, Object fallback ->
+    if (rootProject.ext.has(name)) return rootProject.ext.get(name)
+    if (rootProject.hasProperty(name)) return rootProject.property(name)
+    def override = project.properties["ObsidianMediaPlayer_" + name]
+    if (override != null) return override
+    return fallback
+}
+
+def asInt = { Object value, int fallback ->
+    if (value == null) return fallback
+    try {
+        return value.toString().trim().toInteger()
+    } catch (NumberFormatException ignored) {
+        return fallback
+    }
+}
 
 def isNewArchitectureEnabled() {
     return rootProject.hasProperty("newArchEnabled") && rootProject.getProperty("newArchEnabled") == "true"
 }
 
+// Mirror the host's ABI list so we do not compile four ABIs when the app asked
+// for one, and do not silently drop an ABI the app is producing.
+def resolveAbiFilters = {
+    def raw = null
+    if (rootProject.ext.has("reactNativeArchitectures")) {
+        raw = rootProject.ext.get("reactNativeArchitectures")
+    } else if (rootProject.hasProperty("reactNativeArchitectures")) {
+        raw = rootProject.property("reactNativeArchitectures")
+    }
+    if (raw == null) return ["armeabi-v7a", "arm64-v8a", "x86", "x86_64"]
+    // The template exposes a closure/method, gradle.properties a comma list.
+    if (raw instanceof Closure) raw = raw.call()
+    def list = raw.toString().split(",").collect { it.trim() }.findAll { !it.isEmpty() }
+    return list.isEmpty() ? ["armeabi-v7a", "arm64-v8a", "x86", "x86_64"] : list
+}
+
 android {
     namespace = "com.obsidianmediaplayer"
-    compileSdk = 34
+
+    // Must not be lower than the host's minSdk: react-android and the other
+    // autolinked AARs declare their own minimum, and the manifest merger fails
+    // with "uses-sdk:minSdkVersion X cannot be smaller than version Y" if this
+    // module claims to support an older one.
+    compileSdk = asInt(resolveHostValue("compileSdkVersion", 36), 36)
 
     defaultConfig {
-        minSdk = 21
-        targetSdk = 34
+        minSdk = asInt(resolveHostValue("minSdkVersion", 24), 24)
+        targetSdk = asInt(resolveHostValue("targetSdkVersion", 36), 36)
         buildConfigField("boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString())
 
         externalNativeBuild {
             cmake {
-                cppFlags "-O2", "-frtti", "-fexceptions", "-Wall", "-Werror", "-std=c++17"
-                abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+                // Warning/optimisation flags live in CMakeLists.txt. Duplicating
+                // them here forces them onto every translation unit twice and
+                // makes `-Werror` impossible to relax per-file.
+                cppFlags "-O2", "-frtti", "-fexceptions", "-std=c++17"
+                abiFilters(*resolveAbiFilters())
+
+                // THIS IS THE FIX for:
+                //   [CXX1212] .../obsidian-media-player/android/CMakeLists.txt
+                //            release|arm64-v8a : User is using a static STL but
+                //            library requires a shared STL
+                //            [//ReactAndroid/hermestooling]
+                //   com.google.prefab.api.NoMatchingLibraryException: No compatible
+                //            library found for //ReactAndroid/hermestooling
+                //
+                // `react-native-gradle-plugin` appends `-DANDROID_STL=c++_shared` to
+                // `com.android.application` projects only
+                // (NdkConfiguratorUtils.configureReactNativeNdk, gated on
+                // `withPlugin("com.android.application")`). A `com.android.library`
+                // gets nothing injected, so AGP configures this module with the NDK
+                // default STL (system, which prefab treats as static) and every
+                // ReactAndroid prefab package built against the shared STL is
+                // rejected at `:obsidian-media-player:configureCMake*`.
+                // `hermestooling` is just the package that happens to surface it —
+                // it arrives transitively via the `ReactAndroid::` targets linked in
+                // CMakeLists.txt, so it is never named in this module.
+                //
+                // It has to go through `arguments`: the AGP CMake DSL
+                // (`ExternalNativeCmakeOptions`) only exposes `path` and `version` —
+                // `stl` lives on the unrelated `ndk` block, and AGP resolves the STL
+                // from the CMake command line anyway
+                // (CxxModuleModelKt.determineUsedStlForCmake). Sharing the STL is
+                // also safe for the app: the RN plugin adds a
+                // `**/libc++_shared.so` pickFirst to the app's jniLibs packaging
+                // options, so this AAR's copy is deduplicated against the app's.
+                arguments "-DANDROID_STL=c++_shared"
             }
         }
+    }
+
+    // Pinning the host's NDK keeps this module from downloading (and linking
+    // libc++_shared.so from) a second, different NDK revision.
+    def hostNdkVersion = resolveHostValue("ndkVersion", null)
+    if (hostNdkVersion != null) {
+        ndkVersion hostNdkVersion.toString()
     }
 
     externalNativeBuild {
@@ -56,7 +129,27 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
 
-    buildFeatures { buildConfig = true }
+    buildFeatures {
+        buildConfig = true
+
+        // THIS IS THE FIX for:
+        //   CMake Error at CMakeLists.txt:28 (find_package)
+        //   Could not find a package configuration file provided by "ReactAndroid"
+        //
+        // `find_package(ReactAndroid CONFIG)` in a *library* module is resolved by
+        // AGP's prefab mechanism, not by the React Native Gradle plugin. The
+        // plugin only injects `-DREACT_ANDROID_DIR` and flips `prefab` on for
+        // `com.android.application` projects
+        // (NdkConfiguratorUtils.configureReactNativeNdk, gated on
+        // `project.pluginManager.withPlugin("com.android.application")`).
+        // ReactAndroid publishes its prefab packages itself
+        // (ReactAndroid/build.gradle -> `buildFeatures { prefab true }`), so a
+        // library has to opt in on its own. Without it AGP generates no
+        // ReactAndroidConfig.cmake and CMake's config-mode search has nothing to
+        // find — which is exactly what the CMake configure invocation in the
+        // failing log showed (no prefab path in its arguments).
+        prefab = true
+    }
 }
 
 // React Native Codegen integration. This block is what makes the
@@ -64,10 +157,9 @@ android {
 // build and generate:
 //   android/build/generated/source/codegen/jni/  (Fabric component JNI)
 //   android/build/generated/source/codegen/java/  (TurboModule Java specs)
-// Without it, the app-level CMake step fails with:
-//   "add_subdirectory given source .../obsidian-media-player/android/build/
-//    generated/source/codegen/jni/ which is not an existing directory"
-// and "Cannot specify link libraries for target react_codegen_ObsidianMediaPlayerSpec".
+// CMakeLists.txt guards the add_subdirectory on that directory existing, so a
+// failed/absent Codegen run degrades to "no Fabric descriptors" instead of
+// breaking the whole app build.
 react {
     jsRootDir = file("../../")
     libraryName = "ObsidianMediaPlayerSpec"
@@ -75,7 +167,18 @@ react {
 }
 
 dependencies {
-    implementation("com.facebook.react:react-native:+")
+    // `api`, not `implementation`: ObsidianMediaPlayerPackage and
+    // ObsidianVideoManager are public and their signatures extend React Native
+    // types (ReactPackage, SimpleViewManager<...>, ReactContextBaseJavaModule).
+    // With `implementation` react-android is absent from the consumer's compile
+    // classpath and any app that touches those classes fails to compile.
+    //
+    // `react-android` (not the voided `react-native` coordinate) is the
+    // prefab-publishing artifact. The `react-native` coordinate only still
+    // resolves because the RN Gradle plugin substitutes it
+    // (DependencyUtils.getDependencySubstitutions).
+    api("com.facebook.react:react-android")
+
     implementation("androidx.media3:media3-exoplayer:1.3.1")
     implementation("androidx.media3:media3-session:1.3.1")
     implementation("androidx.media3:media3-exoplayer-dash:1.3.1")

@@ -1,8 +1,10 @@
 import Foundation
 
-/// Headless Audio player. Works as an RCTBridgeModule (Paper) and as a
-/// TurboModule (New Architecture) by conforming to the generated
-/// `ObsidianAudioSpec` protocol when codegen is enabled.
+/// Headless Audio player.
+///
+/// Registered as a TurboModule by the `NativeObsidianAudioSpec` conformance in
+/// `ios/ObsidianMediaPlayerModules.mm` — `RCTTurboModule` needs a C++
+/// `getTurboModule:` that Swift cannot implement. See to-be-done.md FG-3.1.
 @objc(ObsidianAudio)
 class ObsidianAudio: RCTEventEmitter {
   private let engine = ObsidianAudioEngine()
@@ -38,7 +40,7 @@ class ObsidianAudio: RCTEventEmitter {
     guard let data = sourceJson.data(using: .utf8),
           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let uri = obj["uri"] as? String else { return }
-    engine.load(uri, headers: obj["headers"] as? [String: String], drmLicenseUri: obj["drmLicenseUri"] as? String)
+    engine.load(uri, headers: obj["headers"] as? [String: String])
   }
   @objc func play() { engine.play() }
   @objc func pause() { engine.pause() }
@@ -53,12 +55,6 @@ class ObsidianAudio: RCTEventEmitter {
                              reject: @escaping RCTPromiseRejectBlock) {
     resolve(engine.currentStateJson())
   }
-
-  // MARK: - New Architecture TurboModule conformance
-
-  #if RCT_NEW_ARCH_ENABLED
-  // Conformance to the generated ObsidianAudioSpec protocol (see bottom).
-  #endif
 }
 
 extension ObsidianAudio: ObsidianAudioEngineDelegate {
@@ -74,8 +70,3 @@ extension ObsidianAudio: ObsidianAudioEngineDelegate {
       .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
   }
 }
-
-#if RCT_NEW_ARCH_ENABLED
-import ObsidianMediaPlayerSpec
-extension ObsidianAudio: ObsidianAudioSpec {}
-#endif

@@ -71,9 +71,8 @@ class ObsidianAudioModule(private val ctx: ReactApplicationContext) : ReactConte
     } ?: emptyMap()
     val type = obj.optString("type").takeIf { it.isNotEmpty() }
     val cacheable = obj.optBoolean("cacheable", true)
-    val drmLicenseUri = obj.optString("drmLicenseUri").takeIf { it.isNotEmpty() }
     val item = MediaItem.Builder().setUri(uri).build()
-    val source = ExoPlayerProvider.buildMediaSource(ctx, item, headers, type, cacheable, drmLicenseUri)
+    val source = ExoPlayerProvider.buildMediaSource(ctx, item, headers, type, cacheable)
     player.setMediaSource(source); player.prepare()
     lastState["status"] = "loading"; emitState()
   }

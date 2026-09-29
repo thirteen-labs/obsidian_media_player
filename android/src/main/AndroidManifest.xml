@@ -1,6 +1,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <!--
+    API 34+ requires this *in addition to* FOREGROUND_SERVICE for any service
+    declaring android:foregroundServiceType="mediaPlayback". Without it
+    Service.startForeground() throws SecurityException, which meant every
+    <MusicPlayer> mount broke background playback on Android 14+.
+    See ObsidianPlaybackService.onStartCommand + to-be-done.md FG-0.1.
+  -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
   <uses-permission android:name="android.permission.WAKE_LOCK" />
 
   <application>
@@ -8,6 +16,13 @@
       android:name=".music.ObsidianPlaybackService"
       android:enabled="true"
       android:exported="false"
-      android:foregroundServiceType="mediaPlayback" />
+      android:foregroundServiceType="mediaPlayback">
+      <!-- FG-4.0: MediaSessionService binding. External surfaces (lock screen,
+        headset, Wear OS, Auto, MediaController) connect through this; the
+        inherited MediaSessionService.onBind serves it, so no code handles it. -->
+      <intent-filter>
+        <action android:name="androidx.media3.session.MediaSessionService" />
+      </intent-filter>
+    </service>
   </application>
 </manifest>

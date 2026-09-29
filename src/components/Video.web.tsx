@@ -1,18 +1,9 @@
-import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { INITIAL_STATE, parseState } from '../utils/media';
-import type { PlaybackState, VideoProps } from '../types';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { INITIAL_STATE } from '../utils/media';
+import { WebSourceSlot } from '../utils/webFetch';
+import type { PlaybackState, VideoHandle, VideoProps } from '../types';
 
-export interface VideoHandle {
-  play: () => void;
-  pause: () => void;
-  stop: () => void;
-  seek: (seconds: number) => void;
-  setRate: (rate: number) => void;
-  setVolume: (volume: number) => void;
-  setMuted: (muted: boolean) => void;
-  setResizeMode: (mode: string) => void;
-  getState: () => PlaybackState;
-}
+export type { VideoHandle };
 
 /**
  * Web fallback for <Video>. Uses a plain HTML5 <video> element so the same
@@ -26,11 +17,47 @@ export const Video = forwardRef<VideoHandle, VideoProps>(function VideoWeb(
   const videoRef = useRef<HTMLVideoElement>(null);
   const [state, setState] = useState<PlaybackState>(INITIAL_STATE);
 
+  // Live mirror + pending flushes: identical contract to the native build, so
+  // `getState()` is not a stale closure and `flush()` exists here too. It used
+  // to be absent entirely because this file had its own `VideoHandle` copy.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const pendingFlushes = useRef<
+    Array<{ resolve: (s: PlaybackState) => void; timer: ReturnType<typeof setTimeout> }>
+  >([]);
+
+  const settleFlushes = useCallback((next: PlaybackState) => {
+    const pending = pendingFlushes.current;
+    pendingFlushes.current = [];
+    pending.forEach((p) => {
+      clearTimeout(p.timer);
+      p.resolve(next);
+    });
+  }, []);
+
+  const flush = useCallback(
+    (timeoutMs = 1000) =>
+      new Promise<PlaybackState>((resolve) => {
+        const timer = setTimeout(() => resolve(stateRef.current), timeoutMs);
+        pendingFlushes.current.push({ resolve, timer });
+      }),
+    []
+  );
+
+  useEffect(
+    () => () => {
+      pendingFlushes.current.forEach((p) => clearTimeout(p.timer));
+      pendingFlushes.current = [];
+    },
+    []
+  );
+
   const emit = (next: Partial<PlaybackState> & { status?: PlaybackState['status'] }) => {
     setState(prev => {
       const merged = { ...prev, ...next } as PlaybackState;
       onStateChange?.(merged);
       onEvent?.({ type: 'state', state: merged });
+      settleFlushes(merged);
       return merged;
     });
   };
@@ -44,8 +71,60 @@ export const Video = forwardRef<VideoHandle, VideoProps>(function VideoWeb(
     setVolume: v => { if (videoRef.current) videoRef.current.volume = v; },
     setMuted: m => { if (videoRef.current) videoRef.current.muted = m; },
     setResizeMode: () => {},
-    getState: () => state,
-  }), [state]);
+    getState: () => stateRef.current,
+    flush,
+  }), [flush]);
+
+  // `source` is resolved imperatively rather than as the `src` JSX prop,
+  // because a source that authenticates via request headers has to be fetched
+  // before there is a URL to put in the prop. The no-headers path still lands
+  // synchronously, so the common case is unaffected. See to-be-done.md FG-2.2.
+  const slot = useRef<WebSourceSlot>(undefined as unknown as WebSourceSlot);
+  if (!slot.current) slot.current = new WebSourceSlot();
+
+  // Both read through refs so the effect below depends only on `sourceKey`.
+  // `source` and `emit` get fresh identities every render (an inline object
+  // literal, a fresh closure), and depending on either would re-fetch on every
+  // render. Reading through a ref also means the effect never calls a stale
+  // `onEvent`/`onStateChange` from the render it was created in.
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
+  const emitRef = useRef(emit);
+  emitRef.current = emit;
+
+  const sourceKey = `${source.uri}|${source.type ?? ''}|${JSON.stringify(source.headers ?? null)}`;
+
+  useEffect(() => {
+    if (!videoRef.current) return;
+    let cancelled = false;
+    void slot.current.load(sourceRef.current).then((result) => {
+      // `cancelled` covers unmount; the slot's own generation covers a newer
+      // `source` winning the race.
+      if (cancelled || result.kind === 'stale' || !videoRef.current) return;
+      if (result.kind === 'error') {
+        // Loud, per FG-2.2: a source that 401s would otherwise leave an element
+        // that never fires `error`.
+        emitRef.current({ status: 'error', error: result.message });
+        return;
+      }
+      videoRef.current.src = result.url;
+      videoRef.current.currentTime = 0;
+    });
+    return () => {
+      cancelled = true;
+    };
+    // `sourceKey` identifies the source by *value*. A caller passing an inline
+    // `{ uri, headers }` literal gets a new object identity every render, so
+    // depending on `source` itself would re-fetch on every render.
+  }, [sourceKey]);
+
+  useEffect(
+    () => () => {
+      // Free the header-auth blob on unmount.
+      slot.current.release();
+    },
+    []
+  );
 
   useEffect(() => { if (videoRef.current) videoRef.current.volume = volume; }, [volume]);
   useEffect(() => { if (videoRef.current) videoRef.current.muted = muted; }, [muted]);
@@ -59,7 +138,8 @@ export const Video = forwardRef<VideoHandle, VideoProps>(function VideoWeb(
 
   return React.createElement('video', {
     ref: videoRef as any,
-    src: source.uri,
+    // No `src` prop: the effect above assigns it once the source resolves, so
+    // that a header-auth source has a URL to assign. See to-be-done.md FG-2.2.
     autoPlay,
     loop: repeat,
     muted,

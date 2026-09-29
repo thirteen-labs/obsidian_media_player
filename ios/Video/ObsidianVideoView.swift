@@ -37,7 +37,7 @@ final class ObsidianVideoView: UIView {
           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let uri = obj["uri"] as? String else { return }
     let headers = obj["headers"] as? [String: String]
-    media.load(uri, headers: headers, cacheable: obj["cacheable"] as? Bool ?? true, drmLicenseUri: obj["drmLicenseUri"] as? String)
+    media.load(uri, headers: headers, cacheable: obj["cacheable"] as? Bool ?? true)
   }
 
   @objc func setPaused(_ paused: Bool) {
@@ -47,7 +47,10 @@ final class ObsidianVideoView: UIView {
   @objc func setVolume(_ volume: NSNumber) { media.setVolume(volume.doubleValue) }
   @objc func setRate(_ rate: NSNumber) { media.setRate(rate.doubleValue) }
   @objc func setResizeMode(_ mode: String) { media.resizeMode = mode }
-  @objc func setRepeat(_ repeatMode: Bool) { /* loop handled on ended */ }
+  // Parameter is not named `repeat` — that is a Swift keyword. The ObjC
+  // selector (`setRepeat:`) is unaffected, so the Paper prop mapping is
+  // identical either way.
+  @objc func setRepeat(_ enabled: Bool) { media.setRepeat(enabled) }
 
   // MARK: - Commands (Paper)
 
@@ -72,4 +75,5 @@ extension ObsidianVideoView: ObsidianVideoPlayerDelegate {
   }
   func videoPlayerEnded() { onEnded?(nil) }
   func videoPlayerError(_ message: String) { onError?(["message": message]) }
+  func videoPlayerBuffering(_ buffered: Double) { onBuffering?(["buffered": buffered]) }
 }

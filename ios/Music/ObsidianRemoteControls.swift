@@ -51,7 +51,9 @@ final class ObsidianRemoteControls: NSObject {
   @objc private func seekTo(_ event: MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus {
     if let evt = event as? MPChangePlaybackPositionCommandEvent {
       onSeek?(evt.positionTime)
-      onCommand?("seek")
+      // No onCommand here: onSeek already emitted the seek with the exact
+      // requested position (see ObsidianMusicPlayer.handleRemoteCommand).
+      // Emitting again would double-report every scrub with a stale position.
     }
     return .success
   }

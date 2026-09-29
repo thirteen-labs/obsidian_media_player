@@ -51,9 +51,13 @@ final class ObsidianAudioEngine: NSObject {
     try? session.setActive(true)
   }
 
-  func load(_ uri: String, headers: [String: String]?, drmLicenseUri: String? = nil) {
+  func load(_ uri: String, headers: [String: String]?) {
     currentURL = uri
-    _ = drmLicenseUri // hook for AVContentKeySession / FairPlay
+    // NOTE: DRM is not supported. `MediaSource.drmLicenseUri` was removed in
+    // 0.3.0 because it was a pure passthrough that reached this point and was
+    // discarded. FairPlay needs AVContentKeySession + an
+    // AVAssetResourceLoaderDelegate and the com.apple.developer.fps
+    // entitlement; see to-be-done.md FG-6.2.
     let asset: AVAsset
     if let headers = headers, !headers.isEmpty {
       asset = AVURLAsset(url: URL(string: uri) ?? URL(fileURLWithPath: uri),

@@ -1,11 +1,13 @@
-import { NativeModules } from 'react-native';
 import type { Spec } from '../specs/NativeObsidianCache';
+import { requireTurboModule } from './requireTurboModule';
 
-function resolve(): Spec {
-  const isNewArch = (global as any).__turboModuleProxy != null;
-  if (isNewArch) return require('../specs/NativeObsidianCache').default as Spec;
-  return (NativeModules as any).ObsidianCache as Spec;
-}
+/** Offline cache / download TurboModule. See `requireTurboModule` for why there
+ * is no `NativeModules` fallback.
+ *
+ * Note this throws at *import* time if the module is missing, which is
+ * deliberate: `core/DownloadManager.ts` gates on `CacheNative` being usable, so
+ * a silent `undefined` here would surface much later as a download that never
+ * resolves. */
+const ObsidianCache = requireTurboModule<Spec>('ObsidianCache');
 
-const mod = resolve();
-export default mod;
+export default ObsidianCache;

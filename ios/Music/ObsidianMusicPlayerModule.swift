@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import MediaPlayer
+import UIKit
 
 @objc(ObsidianMusicPlayer)
 class ObsidianMusicPlayer: RCTEventEmitter {
@@ -22,7 +23,14 @@ class ObsidianMusicPlayer: RCTEventEmitter {
   override init() {
     super.init()
     remote.onCommand = { [weak self] cmd in self?.handleRemoteCommand(cmd) }
-    remote.onSeek = { [weak self] pos in self?.player.seek(to: CMTime(seconds: pos, preferredTimescale: 1000)) }
+    // Scrubber seeks emit with the requested position (exact); the step
+    // buttons have no position and go through handleRemoteCommand instead.
+    // Either way JS sees one onRemoteCommand in the { command, payload }
+    // shape Android sends, so useRemoteControls needs no platform branch.
+    remote.onSeek = { [weak self] pos in
+      self?.player.seek(to: CMTime(seconds: pos, preferredTimescale: 1000))
+      self?.emit("onRemoteCommand", ["command": "seek", "payload": ["position": pos]])
+    }
     timeObserver = player.addPeriodicTimeObserver(
       forInterval: CMTime(seconds: 0.25, preferredTimescale: 1000),
       queue: .main
@@ -107,10 +115,37 @@ class ObsidianMusicPlayer: RCTEventEmitter {
     emitQueue()
   }
   @objc func removeTrack(_ id: String) {
-    tracks.removeAll { $0.id == id }
-    rebuildOrder()
+    // FG-4.4: removing an unplayed track must not restart the current song.
+    // Mirror of useMusicPlayer.web removeTrack and Android removeTrack —
+    // surgical order update, reload only when the loaded track was removed,
+    // empty queue stops cleanly.
+    guard let trackPos = tracks.firstIndex(where: { $0.id == id }) else { return }
+    let wasActive = currentIndex() == trackPos
+    let wasPlaying = player.timeControlStatus == .playing
+    let removedAtCursor = order.firstIndex(of: trackPos)
+    tracks.remove(at: trackPos)
+    if tracks.isEmpty {
+      order = []
+      cursor = 0
+      player.pause()
+      player.replaceCurrentItem(with: nil)
+      lastState["status"] = "idle"
+      lastState["position"] = 0
+      emit("onState", ["stateJson": stateJson()])
+      emitQueue()
+      MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+      return
+    }
+    order = order.filter { $0 != trackPos }.map { $0 > trackPos ? $0 - 1 : $0 }
+    if wasActive {
+      cursor = min(max(removedAtCursor ?? 0, 0), max(order.count - 1, 0))
+    } else if let removed = removedAtCursor, removed < cursor {
+      cursor -= 1
+    } else {
+      cursor = min(cursor, max(order.count - 1, 0))
+    }
     emitQueue()
-    loadCurrent()
+    if wasActive { loadCurrent(autoPlay: wasPlaying) }
   }
   @objc func skipTo(_ index: Double) {
     let target = Int(index)
@@ -183,7 +218,13 @@ class ObsidianMusicPlayer: RCTEventEmitter {
     case "previous": previous()
     default: break
     }
-    emit("onRemoteCommand", ["command": cmd])
+    // { command, payload } — the same shape Android sends (FG-4.1 step 2).
+    // Scrubber seeks ("seekTo" in ObsidianRemoteControls) are emitted with
+    // the exact requested position by onSeek and never reach this path; a
+    // "seek" here is a step button, reported at the current position.
+    var payload: [String: Any] = [:]
+    if cmd == "seek" { payload["position"] = player.currentTime().seconds }
+    emit("onRemoteCommand", ["command": cmd, "payload": payload])
   }
 
   private func updateNowPlaying() {
@@ -193,10 +234,34 @@ class ObsidianMusicPlayer: RCTEventEmitter {
     if let title = t.title { info[MPMediaItemPropertyTitle] = title }
     if let artist = t.artist { info[MPMediaItemPropertyArtist] = artist }
     if let album = t.album { info[MPMediaItemPropertyAlbumTitle] = album }
-    info[MPMediaItemPropertyPlaybackDuration] = player.currentItem?.duration.seconds ?? 0
+    // FG-6.4: prefer the declared track duration when the item has none yet
+    // (metadata not loaded) or reports non-finite (live).
+    let itemSeconds = player.currentItem?.duration.seconds ?? 0
+    if let declared = t.duration, declared > 0 {
+      info[MPMediaItemPropertyPlaybackDuration] = declared
+    } else if itemSeconds.isFinite {
+      info[MPMediaItemPropertyPlaybackDuration] = itemSeconds
+    }
     info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player.currentTime().seconds
     info[MPNowPlayingInfoPropertyPlaybackRate] = player.rate
     remote.updateNowPlaying(info)
+    // FG-6.4: artwork was decoded and discarded; fetch and publish it
+    // asynchronously so a slow image can never block playback state.
+    if let artString = t.artwork, let url = URL(string: artString) {
+      let trackId = t.id
+      URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+        guard let self = self,
+              let data = data,
+              let image = UIImage(data: data) else { return }
+        // Stale fetch (user skipped on): never paint another track's art.
+        guard self.tracks.indices.contains(self.currentIndex()),
+              self.tracks[self.currentIndex()].id == trackId else { return }
+        var current = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        current[MPMediaItemPropertyArtwork] =
+          MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        self.remote.updateNowPlaying(current)
+      }.resume()
+    }
   }
 
   private func decodeTracks(_ json: String) -> [MusicTrack] {
@@ -251,7 +316,7 @@ class ObsidianMusicPlayer: RCTEventEmitter {
   }
 }
 
-#if RCT_NEW_ARCH_ENABLED
-import ObsidianMediaPlayerSpec
-extension ObsidianMusicPlayer: ObsidianMusicPlayerSpec {}
-#endif
+// TurboModule registration lives in `ios/ObsidianMediaPlayerModules.mm`: the
+// generated `NativeObsidianMusicPlayerSpec` protocol inherits `RCTTurboModule`,
+// whose `getTurboModule:` returns a C++ `std::shared_ptr` and so cannot be
+// conformed to from Swift. See to-be-done.md FG-3.1.
