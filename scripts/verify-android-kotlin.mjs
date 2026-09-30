@@ -41,11 +41,15 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
+  closeSync, existsSync, mkdirSync, openSync, readSync,
+  readdirSync, readFileSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+/** End-Of-Central-Directory record: the last thing a zip writer emits. */
+const EOCD_SIGNATURE = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CACHE = join(tmpdir(), 'omp-kotlin-verify');
@@ -146,15 +150,51 @@ function download(url, dest) {
  * Maven Central intermittently answers a 200 with a 25-byte
  * "Upstream request failed." body, and curl reports success. Validate before
  * use, or the next step fails deep inside tar with an unrelated message.
+ *
+ * A size floor and a "PK" magic check are NOT enough. A download killed
+ * part-way — a cancelled CI job, an evicted runner, a Ctrl-C — leaves a file
+ * that starts with "PK" and is megabytes long, so both checks pass and the
+ * truncated jar is then treated as cached indefinitely. The symptom is the
+ * least informative one available:
+ *
+ *   KOTLIN COMPILER FAILED TO RUN (status=1) — this is a harness bug
+ *     java could not load the compiler class ...
+ *
+ * with nothing pointing at the cause. That is exactly what happened here: a
+ * 4.3 MB `kotlin-compiler-embeddable-2.1.0.jar` whose real size is ~56 MB, while
+ * every plausible diagnosis pointed at the JDK and the classpath separator.
+ *
+ * So check for the End-Of-Central-Directory record. It is the last structural
+ * element a writer emits, so its absence means the file was cut off. It sits
+ * somewhere in the final 65557 bytes rather than at a fixed offset, because a
+ * zip may carry a trailing comment of up to 65535 bytes.
  */
 function isUsable(file) {
   if (!existsSync(file)) return false;
   const size = statSync(file).size;
   if (size < 2048) return false;
+  const isXml = file.endsWith('.pom') || file.endsWith('.module');
   const head = readFileSync(file).subarray(0, 2).toString('latin1');
   // jar/aar are both zip: starts with "PK". A .pom or .module is XML.
-  if (!file.endsWith('.pom') && !file.endsWith('.module') && head !== 'PK') return false;
+  if (!isXml && head !== 'PK') return false;
+  if (!isXml && !hasEndOfCentralDirectory(file, size)) {
+    log(`  cache: ${basename(file)} is a truncated zip (${size} bytes, no EOCD) — refetching`);
+    return false;
+  }
   return true;
+}
+
+/** A complete zip carries an End-Of-Central-Directory record in its last 65557 bytes. */
+function hasEndOfCentralDirectory(file, size) {
+  const span = Math.min(size, 65557);
+  const tail = Buffer.alloc(span);
+  const fd = openSync(file, 'r');
+  try {
+    readSync(fd, tail, 0, span, size - span);
+  } finally {
+    closeSync(fd);
+  }
+  return tail.lastIndexOf(EOCD_SIGNATURE) !== -1;
 }
 
 /** Download with a retry, and fall back to the Apache mirror of Central. */
@@ -235,11 +275,22 @@ function compile({ rn, kotlin }) {
       log(`${(statSync(local).size / 1048576).toFixed(1)}MB`);
     }
     const jar = join(jars, `${artifact}-${version}.jar`);
+    // cp/ is a SECOND cache, and it has to be validated too — not just checked
+    // for existence.
+    //
+    // `dl/` holds the download; `cp/` holds the copy that actually goes on the
+    // classpath. When a download was truncated, the EOCD check below correctly
+    // refetched `dl/` and cheerfully printed "56.1MB" for the new file — and the
+    // gate still failed, because `cp/` was written under `if (!existsSync(jar))`
+    // and so kept the corrupt copy indefinitely. The size printed was the
+    // *repaired* file's; the file handed to java was the broken one. Repairing
+    // one cache and then reading the other is not a repair.
     if (file.endsWith('.aar')) {
-      if (!existsSync(jar)) extractClasses(local, jar);
-    } else if (!existsSync(jar)) {
+      if (!isUsable(jar)) extractClasses(local, jar);
+    } else if (!isUsable(jar)) {
       // The compiler jar lives here too; it is filtered back out of the -cp
       // below and used only on the launch classpath.
+      rmSync(jar, { force: true });
       writeFileSync(jar, readFileSync(local));
     }
   }

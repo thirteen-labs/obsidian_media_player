@@ -74,7 +74,15 @@ android {
                 // Warning/optimisation flags live in CMakeLists.txt. Duplicating
                 // them here forces them onto every translation unit twice and
                 // makes `-Werror` impossible to relax per-file.
-                cppFlags "-O2", "-frtti", "-fexceptions", "-std=c++17"
+                //
+                // `-std=` was here until the C++20 fix and must stay out. AGP
+                // injects these into CMAKE_CXX_FLAGS, which land *before* the
+                // `-std=gnu++20` CMake derives from CMAKE_CXX_STANDARD — so with
+                // three places setting the standard (`-std=c++17` here, another
+                // in target_compile_options, and the CMake property), the winner
+                // was decided purely by ordering, and every build came out as
+                // C++17 while RN 0.74's headers need C++20. See CMakeLists.txt.
+                cppFlags "-O2", "-frtti", "-fexceptions"
                 abiFilters(*resolveAbiFilters())
 
                 // THIS IS THE FIX for:

@@ -20,8 +20,36 @@
 cmake_minimum_required(VERSION 3.13)
 
 set(CMAKE_VERBOSE_MAKEFILE on)
-set(CMAKE_CXX_STANDARD 17)
+
+# C++20, and set ONCE, here.
+#
+# React Native 0.74's Android headers require it. The prefab modules we compile
+# against use C++20-only constructs — `concept` in
+# react_nativemodule_core/react/renderer/core/RawProps.h, `std::bit_width` in
+# yoga/enums/YogaEnums.h, `std::identity` in react/utils/fnv1a.h — so any
+# translation unit that includes them has to be compiled as C++20. RN's own C++
+# agrees: ReactCommon/yoga/cmake/project-defaults.cmake sets 20.
+#
+# This was 17, and it was the *last* `-std=` on every compile line, because
+# CMake appends the flag it derives from CXX_STANDARD after every
+# target_compile_options entry. That silently overrode the `-std=c++20` the
+# generated codegen CMakeLists asks for, so both targets failed:
+#
+#   error: unknown type name 'concept'
+#   error: no member named 'bit_width' in namespace 'std'
+#   error: no type named 'identity' in namespace 'std'
+#
+# The moral, and the reason there is exactly one authority for the standard:
+# three files set it (this property, a hand-written `-std=` in
+# target_compile_options below, and `cppFlags` in ../build.gradle) and CMake's
+# flag won purely by being last. The other two are removed rather than bumped —
+# keeping a second, earlier `-std=` re-creates the same ordering trap the next
+# time someone edits one of the three.
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# CXX_EXTENSIONS defaults to ON, which makes CMake emit `-std=gnu++20`. That is
+# what RN compiles with; left explicit so the spelling is not an accident.
+set(CMAKE_CXX_EXTENSIONS ON)
 
 project(ObsidianMediaPlayerSpec)
 
@@ -63,7 +91,8 @@ target_compile_options(
   PRIVATE
     -fexceptions
     -frtti
-    -std=c++17
+    # No -std= here on purpose — CMake owns it via CMAKE_CXX_STANDARD above, so
+    # there is exactly one source for the standard. See the comment there.
     -Wall
     -Wextra
     -Wno-unused-parameter
