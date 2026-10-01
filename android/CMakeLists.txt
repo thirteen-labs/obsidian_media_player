@@ -187,9 +187,7 @@ if(EXISTS "${CODEGEN_JNI_DIR}/CMakeLists.txt")
   # outcomes — which is what identified the bare-name targets as the cause.
   #
   # So: link the namespaced form here, one-for-one with what the generated file
-  # asked for. This is additive — CMake merges the two target_link_libraries
-  # calls — and the bare names are left in place for the case where a future
-  # codegen version emits namespaced targets itself.
+  # asked for.
   target_link_libraries(react_codegen_ObsidianMediaPlayerSpec
     fbjni::fbjni
     ReactAndroid::folly_runtime
@@ -224,6 +222,50 @@ if(EXISTS "${CODEGEN_JNI_DIR}/CMakeLists.txt")
       -Wno-comma
       -Wno-shorten-64-to-32
   )
+
+  # NOW DROP THE BARE NAMES. Adding the namespaced targets above fixed the
+  # *compile* step, but CMake MERGES successive target_link_libraries calls
+  # rather than replacing them, so the generated file's bare names were still on
+  # the link line and the build failed one step later, at the link:
+  #
+  #   ld.lld: error: unable to find library -lfbjni
+  #   ld.lld: error: unable to find library -lfolly_runtime
+  #   ... one per bare name ...
+  #
+  # The link line shows both groups, which is the whole diagnosis:
+  #
+  #   -lfbjni -lfolly_runtime -lglog ... -lyoga      <- bare, from the generated file
+  #   /home/runner/.../libfbjni.so /home/runner/.../libfolly_runtime.so ...
+  #                                                 <- correct, from the namespaced targets
+  #
+  # A bare `folly_runtime` is not a target and not a path, so CMake emits
+  # `-lfolly_runtime`, and the linker has no `-L` pointing at the prefab
+  # `libs/android.arm64-v8a` directories (this is a library module consuming
+  # react-android as a dependency, not the app that AGP configures directly).
+  #
+  # So rewrite LINK_LIBRARIES, keeping only entries that are real targets or
+  # absolute paths. Must run AFTER the target_link_libraries above, or the
+  # namespaced entries it keeps are not in the list yet. CMake offers no way to
+  # remove entries from the property, so the property is replaced wholesale.
+  get_target_property(_omp_gen_links react_codegen_ObsidianMediaPlayerSpec LINK_LIBRARIES)
+  set(_omp_kept "")
+  set(_omp_dropped "")
+  foreach(_omp_lib IN LISTS _omp_gen_links)
+    if(TARGET "${_omp_lib}" OR IS_ABSOLUTE "${_omp_lib}")
+      list(APPEND _omp_kept "${_omp_lib}")
+    else()
+      list(APPEND _omp_dropped "${_omp_lib}")
+    endif()
+  endforeach()
+  if(_omp_dropped)
+    message(STATUS
+      "obsidian-media-player: dropped ${_omp_dropped} from the generated codegen "
+      "target's link line; they are not resolvable targets and became -l flags "
+      "the linker could not find. The namespaced equivalents above are linked "
+      "instead.")
+    set_property(TARGET react_codegen_ObsidianMediaPlayerSpec
+      PROPERTY LINK_LIBRARIES ${_omp_kept})
+  endif()
 
   target_link_libraries(${CMAKE_PROJECT_NAME} react_codegen_ObsidianMediaPlayerSpec)
 endif()
