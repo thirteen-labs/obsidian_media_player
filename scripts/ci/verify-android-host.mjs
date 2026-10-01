@@ -34,6 +34,17 @@
  *   node scripts/ci/verify-android-host.mjs --rn 0.80.0
  *   node scripts/ci/verify-android-host.mjs --keep     # leave the app on disk
  *
+ * Usage:
+ *
+ *   node scripts/ci/verify-android-host.mjs
+ *   node scripts/ci/verify-android-host.mjs --rn 0.80.0
+ *   node scripts/ci/verify-android-host.mjs --keep     # leave the app on disk
+ *   node scripts/ci/verify-android-host.mjs --full     # lean log: no stack frames
+ *
+ * On failure the script prints a digest of the compiler/linker diagnostics
+ * before throwing, so the cause does not have to be found by scrolling past
+ * Gradle's stack frames — see summarise() below.
+ *
  * Requires: Node 18+, JDK 17, an Android SDK with the platform the RN template
  * asks for, and CMake 3.22.1 (installed by CI, see .github/workflows/ci.yml).
  */
@@ -67,19 +78,92 @@ function arg(name, fallback = null) {
   return i === -1 ? fallback : process.argv[i + 1];
 }
 const hasFlag = (name) => process.argv.includes(`--${name}`);
+// Lean log: drop Gradle's stack frames, which is what buried the diagnostics in
+// the first place. The digest below is the default answer; this is the escape
+// hatch for anyone who wants more.
+const FULL = hasFlag('full');
 
+/**
+ * Run a command, keeping its output.
+ *
+ * `stdio: 'inherit'` was fine locally and useless in CI: with `--stacktrace`, a
+ * Gradle failure emits ~150 lines of `at com.android.build.gradle...` frames and
+ * buries the single line that matters under them. A real run of this gate came
+ * back with the log *truncated to the last screenful* — it began mid-stack-trace
+ * at `ExecuteProcessKt$executeProcess$1.invoke` and contained not one compiler
+ * or linker diagnostic, which made it impossible to tell whether a fix had
+ * worked or the build had simply failed somewhere new.
+ *
+ * So capture the output and, on failure, print a focused digest of what actually
+ * went wrong before rethrowing. Full output still streams (it is useful when
+ * reading a local run), but the answer no longer depends on scrolling.
+ */
 function run(cmd, args, opts = {}) {
   log(`$ ${cmd} ${args.join(' ')}`);
   const r = spawnSync(cmd, args, {
-    stdio: 'inherit',
+    encoding: 'utf8',
+    maxBuffer: 256 * 1024 * 1024,
     shell: process.platform === 'win32',
     cwd: opts.cwd,
     env: { ...process.env, ...opts.env },
   });
+  const output = `${r.stdout || ''}${r.stderr || ''}`;
+  if (opts.echo !== false) process.stdout.write(output);
+
   if (r.error) throw r.error;
   if (r.status !== 0) {
-    throw new Error(`${cmd} ${args.join(' ')} exited ${r.status ?? r.signal}`);
+    const digest = summarise(output);
+    if (digest) {
+      console.error(`\n[host] what actually failed (${digest.length} line(s)):`);
+      for (const line of digest) console.error(`  ${line}`);
+      console.error('');
+    }
+    throw new Error(
+      `${cmd} ${args.join(' ')} exited ${r.status ?? r.signal}` +
+      (digest.length
+        ? `\n\nThe lines above are the compiler/linker diagnostics; the rest of the\n`
+          + `output is Gradle stack frames. Re-run with --full for the raw log.`
+        : `\n\nNo compiler or linker diagnostic was found in the output — re-run with\n`
+          + `--full and read the whole log, or the failure is above this script.`),
+    );
   }
+}
+
+/**
+ * The lines a person actually needs: CMake's own status messages (which name
+ * what the script did and why), the compiler/linker errors, and the failing
+ * task. Everything else is Gradle plumbing.
+ */
+function summarise(output) {
+  const KEEP = [
+    // CMake prefixes message(STATUS) output with "-- " on every line, including
+    // continuation lines. Matching the bare name without that prefix silently
+    // dropped the one diagnostic this project emits on purpose.
+    /^\s*(--\s*)?obsidian-media-player:/,
+    /\berror:/,                      // clang
+    /^\s*(--\s*)?ld\.lld:/,           // linker (also -- prefixed by CMake/ninja)
+    /^\s*(--\s*)?ld: /,
+    /fatal error:/,
+    /CMake Error/,
+    /NoMatchingLibrary/,
+    /^\s*(--\s*)?ninja: /,
+    /^\s*> Task .* FAILED/,
+    /^\s*FAILURE:/,
+    /^\s*\* What went wrong:/,
+    /^\s*Execution failed for task/,
+    /^\s*Caused by: .*(Exception|Error)/,
+    /undefined (reference|symbol)/,
+  ];
+  const seen = new Set();
+  const out = [];
+  for (const line of output.split(/\r?\n/)) {
+    if (!KEEP.some((re) => re.test(line))) continue;
+    const t = line.trim();
+    if (!t || seen.has(t)) continue;   // dedupe: ninja repeats errors per -j task
+    seen.add(t);
+    out.push(t);
+  }
+  return out;
 }
 
 /**
@@ -178,12 +262,24 @@ if (!existsSync(join(moduleDir, 'android', 'build.gradle'))) {
 const GRADLE_PROJECT = `:${gradleProjectName(PKG_NAME)}`;
 log(`Gradle project: ${GRADLE_PROJECT} (package ${PKG_NAME})`);
 const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
-run(gradlew, [
+// 4. The build. One ABI: the ABI list only multiplies NDK work and proves nothing
+//    extra about this module. `assembleRelease` covers Kotlin *and* the CMake/NDK
+//    compile of OnLoad.cpp, which is the part `verify:android` cannot see. It also
+//    covers manifest merging, which is where the FG-0.1 permission fix is verified.
+//
+// `--stacktrace` is what buries the diagnostics, but it is kept because the
+// alternative is worse: without it Gradle reports only "Build failed with an
+// exception" and not even that when the failure is inside ninja. The digest in
+// run() exists so the useful lines do not have to be found by scrolling — and
+// `--verbose` drops the stack frames for anyone who wants a lean log.
+const gradleArgs = [
   `${GRADLE_PROJECT}:assembleRelease`,
   '-PreactNativeArchitectures=arm64-v8a',
   '--no-configuration-cache',
-  '--stacktrace',
-], { cwd: join(appDir, 'android') });
+];
+if (!FULL) gradleArgs.push('--stacktrace');
+else gradleArgs.push('--verbose');
+run(gradlew, gradleArgs, { cwd: join(appDir, 'android') });
 
 const aar = findAar(moduleDir);
 if (!aar) {
