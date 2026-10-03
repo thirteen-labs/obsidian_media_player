@@ -77,11 +77,61 @@ const prefix = useBundle ? ['exec', 'pod'] : [];
  *   ERROR | [iOS] unknown: ... (Unable to find a specification for
  *   `React-RCTFabric` depended upon by `ObsidianMediaPlayer`)
  *
- * `--include-podspecs` is the supported way to lint against development pods.
+ * `--external-podspecs` is the supported way to lint against development pods.
  * Every local podspec react-native ships is passed, rather than a hand-kept list
  * of the ones currently needed: the dependency graph is transitive (RCTFabric
  * pulls RCT-Folly, glog, Yoga, React-jsi, hermes-engine, React-Fabric, ...), and
  * a list that was correct for one RN version is silently short for the next.
+ *
+ * ## Why `--external-podspecs` and not `--include-podspecs`
+ *
+ * The two flags look interchangeable and are not. Both take the same kind of
+ * glob; they differ in how the generated Podfile consumes each podspec, and
+ * `pod lib lint --help` spells the difference out:
+ *
+ *   --include-podspecs=GLOB   "...used for linting via :path"
+ *   --external-podspecs=GLOB  "...used for linting via :podspec. If there are
+ *                              --include-podspecs, then these are removed
+ *                              from them"
+ *
+ * In `validator.rb#podfile_from_spec` that is literal — one flag becomes a
+ * `:path` declaration and the other a `:podspec` declaration:
+ *
+ *   additional_path_pods.each    { |p| pod File.basename(p, '.*'), :path    => File.dirname(p) }
+ *   additional_podspec_pods.each { |p| pod File.basename(p, '.*'), :podspec => p }
+ *
+ * `:podspec` is how a real app consumes React Native. `use_react_native!` in
+ * react_native_pods.rb writes exactly that for every RN pod, and so does
+ * `React-Core.podspec` for its own third-party dependencies:
+ *
+ *   pod 'DoubleConversion', :podspec => '.../third-party-podspecs/DoubleConversion.podspec'
+ *
+ * An external source is downloaded from the podspec's own `s.source` and its
+ * `prepare_command` runs in the downloaded tree. That is the entire reason
+ * those third-party podspecs exist: the sources are not next to the podspec.
+ * `DoubleConversion.podspec` is three lines of `mv`:
+ *
+ *   spec.prepare_command = 'mv src double-conversion'
+ *   spec.source_files    = 'double-conversion/*.{h,cc}'
+ *
+ * `:path` says instead "this directory *is* the pod", and `File.dirname` of that
+ * podspec is `node_modules/react-native/third-party-podspecs/` — a directory
+ * that contains a podspec and no sources at all. So the lint ran
+ * `mv src double-conversion` against a tree with no `src`, and stopped on the
+ * only error in the run that named no file of ours:
+ *
+ *   ERROR | [iOS] unknown: Encountered an unknown error (/bin/bash -c
+ *   set -e
+ *   mv src double-conversion
+ *   ) during validation.
+ *
+ *   mv: rename src to double-conversion: No such file or directory
+ *
+ * Not specific to DoubleConversion: `boost`, `glog`, `RCT-Folly`, `fmt` and
+ * `fast_float` sit in the same directory and fetch their sources the same way.
+ * The old flag was still doing its other job — making the trunk-unresolvable
+ * pods visible to the resolver — while quietly breaking every pod whose sources
+ * live behind a `prepare_command`.
  */
 const RN_DIR = dirname(
   execFileSync('node', ['--print', "require.resolve('react-native/package.json')"], {
@@ -109,6 +159,30 @@ if (rnPodspecs.length === 0) {
 }
 console.log(`[pod] ${rnPodspecs.length} local React Native podspecs from ${RN_DIR}`);
 
+// `--external-podspecs` arrived in CocoaPods 1.7.0.beta.3, so this is a floor
+// rather than a real constraint. It is still worth checking, because the
+// failure mode without it is a CLAide "Unknown option" buried in a lint run
+// that has already downloaded React Native twice, and a contributor hitting it
+// would reasonably conclude the flag is wrong rather than the tool is old.
+const help = spawnSync(pod, [...prefix, 'lib', 'lint', '--help'], {
+  encoding: 'utf8',
+  maxBuffer: 8 * 1024 * 1024,
+  cwd: ROOT,
+});
+const helpText = `${help.stdout || ''}${help.stderr || ''}`;
+// Only judge the tool when it actually answered. A `pod` that is missing or
+// broken produces no help text, and the lint below reports that far more
+// accurately than "CocoaPods is too old" would.
+if (helpText.trim() && !helpText.includes('--external-podspecs')) {
+  console.error(
+    'This CocoaPods does not support `pod lib lint --external-podspecs`, which\n' +
+      'this gate needs (added in CocoaPods 1.7.0.beta.3).\n\n' +
+      `  ${useBundle ? 'bundle update cocoapods' : 'gem install cocoapods --no-document'}\n` +
+      '  pod --version\n',
+  );
+  process.exit(2);
+}
+
 const args = [
   ...prefix,
   'lib', 'lint', PODSPEC,
@@ -117,13 +191,13 @@ const args = [
   '--no-clean',
   // ONE flag carrying a glob, not one flag per file.
   //
-  // CocoaPods declares it as `--include-podspecs=**/*.podspec` and consumes it
+  // CocoaPods declares it as `--external-podspecs=**/*.podspec` and consumes it
   // as a single value: `validator.rb` does
-  //   additional_path_pods = Dir.glob(include_podspecs)...
+  //   additional_podspec_pods = Dir.glob(external_podspecs)...
   // so it is glob-expanded by Ruby, not by the shell and not by a repeat of the
-  // flag. Repeating `--include-podspecs` once per podspec would leave
-  // `include_podspecs` holding only the last value, and the lint would fail with
-  // the same "Unable to find a specification" error this change exists to fix.
+  // flag. Repeating it once per podspec would leave `external_podspecs` holding
+  // only the last value, and the lint would fail with the same "Unable to find
+  // a specification" error this flag exists to fix.
   //
   // The glob is anchored at RN's package root and covers the whole tree because
   // the dependency graph is transitive: RCTFabric pulls RCT-Folly, glog, Yoga,
@@ -132,7 +206,7 @@ const args = [
   //
   // Forward slashes are fine on Windows too — the gate is macOS-only, but
   // Dir.glob wants one separator.
-  `--include-podspecs=${RN_DIR.replace(/\\/g, '/')}/**/*.podspec`,
+  `--external-podspecs=${RN_DIR.replace(/\\/g, '/')}/**/*.podspec`,
   ...(process.argv.includes('--verbose') ? ['--verbose'] : []),
 ];
 
@@ -152,10 +226,21 @@ if (r.error) {
   process.exit(2);
 }
 if (r.status !== 0) {
+  // "Re-run once" was the wrong advice and cost a cycle: this gate is a build,
+  // and a build that fails on a `prepare_command` 20 minutes in fails the same
+  // way every time. `--no-clean` is set above, so the workspace CocoaPods left
+  // behind is named in the output above and is worth reading — the sources are
+  // all there, and so is the reason.
   console.error(
     '[pod] lib lint failed. This is the only thing in the repo that has ever\n' +
       '      compiled the Swift, so treat it as a real finding rather than a\n' +
-      '      flaky job — re-run once, then read the actual compiler output.',
+      '      flaky job. The lint is deterministic; re-running it will not help.\n\n' +
+      '      Read the error above before anything else. The one shape that is\n' +
+      '      not about this repo is a shell error from a third-party podspec —\n' +
+      '      `mv src double-conversion` failing is DoubleConversion.podspec\'s\n' +
+      '      prepare_command, and means the pod was installed from a directory\n' +
+      '      rather than from its s.source (see --external-podspecs above).\n\n' +
+      '      For compiler output, add --verbose.',
   );
   process.exit(r.status ?? 1);
 }

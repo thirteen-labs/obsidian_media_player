@@ -110,9 +110,16 @@ Pod::Spec.new do |s|
   # layer. See to-be-done.md FG-3.1 and FG-3.3.
   #
   # So resolution happens at lint time instead: scripts/ci/verify-ios-pod.mjs
-  # passes `--include-podspecs` for the local RN podspecs, which is the
+  # passes `--external-podspecs` for the local RN podspecs, which is the
   # CocoaPods-supported way to lint a pod whose dependencies are development
-  # pods. `React-Codegen` remains reachable the same way — note the name, it is
+  # pods. The flag matters as much as the podspecs it carries: `--external-
+  # podspecs` installs them `via :podspec`, which is how a real app consumes
+  # React Native and the only way a pod whose sources sit behind a
+  # `prepare_command` can be installed at all. `--include-podspecs` installs
+  # them `via :path`, i.e. treats the directory holding the podspec as the pod,
+  # which is how this lint used to die on
+  #   mv: rename src to double-conversion: No such file or directory
+  # `React-Codegen` remains reachable the same way — note the name, it is
   # `React-Codegen`, not `ReactCodegen`; the old spelling made every
   # `pod install` fail with "Unable to find a specification for ReactCodegen".
   install_modules_dependencies(s, new_arch_enabled: fabric_enabled)

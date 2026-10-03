@@ -6,7 +6,19 @@ import type { VideoHandle } from '../components/Video';
 export interface VideoControls extends VideoHandle {}
 
 export interface UseVideoPlayerResult {
-  ref: RefObject<VideoHandle>;
+  /**
+   * `| null` is required, not optional: React 19 retyped `useRef<T>(null)` to
+   * return `RefObject<T | null>`, where React 18 claimed `RefObject<T>` — a
+   * non-null promise the runtime never kept. Declaring `RefObject<VideoHandle>`
+   * here therefore stopped compiling the moment React 19 landed
+   * (TS2322: `RefObject<VideoHandle | null>` is not assignable to
+   * `RefObject<VideoHandle>`), while the value itself was always nullable.
+   *
+   * It is also what `<Video ref={ref}>` wants: `forwardRef<VideoHandle, _>`
+   * types its ref prop as `Ref<VideoHandle>`, whose object form is
+   * `RefObject<VideoHandle | null>`.
+   */
+  ref: RefObject<VideoHandle | null>;
   controls: VideoControls;
   /** Live state, updated on every native emission. See `onState`. */
   state: PlaybackState;

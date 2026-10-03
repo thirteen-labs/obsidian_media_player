@@ -68,6 +68,86 @@ project(ObsidianMediaPlayerSpec)
 find_package(ReactAndroid REQUIRED CONFIG)
 find_package(fbjni REQUIRED CONFIG)
 
+# Remove every entry from a target's link properties that CMake cannot resolve —
+# anything that is neither a real target nor an absolute path. See the long
+# comment at the call site for why *both* properties have to be swept, and why
+# that is the whole difference between a link line CMake can satisfy and 18
+# `unable to find library` errors.
+function(omp_prune_unresolvable_link_entries _target)
+  set(_dropped_all "")
+  foreach(_prop IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+    # An unset property reads back as "<name>-NOTFOUND", which is a CMake false
+    # constant, so this also covers LINK_LIBRARIES being absent — which is the
+    # case for an OBJECT library, and RN >= 0.76 generates an OBJECT codegen
+    # target where RN 0.74 generated a SHARED one.
+    get_target_property(_entries ${_target} ${_prop})
+    if(NOT _entries)
+      continue()
+    endif()
+    set(_kept "")
+    set(_dropped "")
+    foreach(_entry IN LISTS _entries)
+      # An entry the plain signature propagates, or one a keyword signature
+      # marked link-only, can arrive wrapped in $<LINK_ONLY:...>. Unwrap only to
+      # decide resolvability; a resolvable entry is kept verbatim so nothing
+      # about how it was declared changes.
+      string(REGEX REPLACE "^\\$<LINK_ONLY:(.*)>$" "\\1" _name "${_entry}")
+      if(TARGET "${_name}" OR IS_ABSOLUTE "${_name}")
+        list(APPEND _kept "${_entry}")
+      else()
+        list(APPEND _dropped "${_name}")
+      endif()
+    endforeach()
+    if(_dropped)
+      set_property(TARGET ${_target} PROPERTY ${_prop} ${_kept})
+      list(APPEND _dropped_all ${_dropped})
+    endif()
+  endforeach()
+  if(_dropped_all)
+    list(REMOVE_DUPLICATES _dropped_all)
+    string(REPLACE ";" ", " _pretty "${_dropped_all}")
+    message(STATUS
+      "obsidian-media-player: dropped unresolvable link entries from ${_target}: "
+      "${_pretty}. The namespaced prefab targets linked alongside are used instead.")
+  endif()
+endfunction()
+
+# The companion guard: fail at configure time rather than at link time. A
+# message(STATUS) is not enough, because AGP does not relay CMake's configure
+# output at the default log level — a `configureCMakeRelWithDebInfo` step in a
+# CI log shows the `[CXX5304]` warnings and nothing else. That invisibility is
+# part of why the LINK_LIBRARIES-only version of this fix read as a fix: it
+# printed a reassuring STATUS line that no run ever showed, while the build
+# stayed red for a different reason. FATAL_ERROR does surface, and
+# scripts/ci/verify-android-host.mjs keeps `obsidian-media-player:` in the
+# failure digest it prints.
+function(omp_assert_link_entries_resolvable _target)
+  foreach(_prop IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+    get_target_property(_entries ${_target} ${_prop})
+    if(NOT _entries)
+      continue()
+    endif()
+    set(_bad "")
+    foreach(_entry IN LISTS _entries)
+      string(REGEX REPLACE "^\\$<LINK_ONLY:(.*)>$" "\\1" _name "${_entry}")
+      if(NOT TARGET "${_name}" AND NOT IS_ABSOLUTE "${_name}")
+        list(APPEND _bad "${_name}")
+      endif()
+    endforeach()
+    if(_bad)
+      list(REMOVE_DUPLICATES _bad)
+      string(REPLACE ";" ", " _pretty "${_bad}")
+      message(FATAL_ERROR
+        "obsidian-media-player: ${_target} still has unresolvable entries in "
+        "${_prop}: ${_pretty}. These reach the linker as -l<name> and fail with "
+        "\"unable to find library\", because this is a library module consuming "
+        "react-android as a dependency rather than the app AGP configures "
+        "directly, so no -L points at the prefab directories. Add the matching "
+        "ReactAndroid:: / fbjni:: target to the target_link_libraries call above.")
+    endif()
+  endforeach()
+endfunction()
+
 add_library(
   ${CMAKE_PROJECT_NAME}
   SHARED
@@ -223,49 +303,50 @@ if(EXISTS "${CODEGEN_JNI_DIR}/CMakeLists.txt")
       -Wno-shorten-64-to-32
   )
 
-  # NOW DROP THE BARE NAMES. Adding the namespaced targets above fixed the
-  # *compile* step, but CMake MERGES successive target_link_libraries calls
-  # rather than replacing them, so the generated file's bare names were still on
-  # the link line and the build failed one step later, at the link:
+  # NOW DROP THE BARE NAMES — FROM BOTH PROPERTIES.
+  #
+  # Adding the namespaced targets above fixed the *compile* step, and rewriting
+  # LINK_LIBRARIES alone fixed the codegen target's own link step — but the build
+  # still failed one step later, in *this* target's link step:
   #
   #   ld.lld: error: unable to find library -lfbjni
-  #   ld.lld: error: unable to find library -lfolly_runtime
-  #   ... one per bare name ...
+  #   ... one per bare name, 18 of them ...
   #
-  # The link line shows both groups, which is the whole diagnosis:
+  # The cause is that the generated file uses the PLAIN (legacy)
+  # target_link_libraries signature, and the plain signature writes its arguments
+  # to *two* properties, not one:
   #
-  #   -lfbjni -lfolly_runtime -lglog ... -lyoga      <- bare, from the generated file
-  #   /home/runner/.../libfbjni.so /home/runner/.../libfolly_runtime.so ...
-  #                                                 <- correct, from the namespaced targets
+  #   target_link_libraries(react_codegen_... fbjni folly_runtime glog jsi ...)
+  #     -> LINK_LIBRARIES           = fbjni;folly_runtime;glog;jsi;...
+  #     -> INTERFACE_LINK_LIBRARIES = fbjni;folly_runtime;glog;jsi;...
   #
-  # A bare `folly_runtime` is not a target and not a path, so CMake emits
-  # `-lfolly_runtime`, and the linker has no `-L` pointing at the prefab
-  # `libs/android.arm64-v8a` directories (this is a library module consuming
-  # react-android as a dependency, not the app that AGP configures directly).
+  # So rewriting only LINK_LIBRARIES left every bare name sitting in
+  # INTERFACE_LINK_LIBRARIES, and the plain `target_link_libraries` at the bottom
+  # of this file — the one that links the codegen target into this target — is
+  # precisely what propagates a linked target's INTERFACE_LINK_LIBRARIES onto
+  # the consumer's link line. The failing link line shows both groups, bare
+  # first, which is the order the generated file added them:
   #
-  # So rewrite LINK_LIBRARIES, keeping only entries that are real targets or
-  # absolute paths. Must run AFTER the target_link_libraries above, or the
-  # namespaced entries it keeps are not in the list yet. CMake offers no way to
-  # remove entries from the property, so the property is replaced wholesale.
-  get_target_property(_omp_gen_links react_codegen_ObsidianMediaPlayerSpec LINK_LIBRARIES)
-  set(_omp_kept "")
-  set(_omp_dropped "")
-  foreach(_omp_lib IN LISTS _omp_gen_links)
-    if(TARGET "${_omp_lib}" OR IS_ABSOLUTE "${_omp_lib}")
-      list(APPEND _omp_kept "${_omp_lib}")
-    else()
-      list(APPEND _omp_dropped "${_omp_lib}")
-    endif()
-  endforeach()
-  if(_omp_dropped)
-    message(STATUS
-      "obsidian-media-player: dropped ${_omp_dropped} from the generated codegen "
-      "target's link line; they are not resolvable targets and became -l flags "
-      "the linker could not find. The namespaced equivalents above are linked "
-      "instead.")
-    set_property(TARGET react_codegen_ObsidianMediaPlayerSpec
-      PROPERTY LINK_LIBRARIES ${_omp_kept})
-  endif()
+  #   ... libyoga.so   -lfbjni -lfolly_runtime -lglog ... -lyoga
+  #        libreact_codegen_rncore.so ... librrc_image.so
+  #        ^ bare, inherited via INTERFACE_LINK_LIBRARIES
+  #                                 ^ correct, from the namespaced targets
+  #
+  # A bare `folly_runtime` is neither a target nor a path, so CMake emits
+  # `-lfolly_runtime`, and nothing on the line can satisfy it: this is a library
+  # module consuming react-android as a dependency, not the app that AGP
+  # configures directly, so there is no -L pointing at the prefab
+  # libs/android.<abi> directories.
+  #
+  # So both properties are swept. An entry is kept only if it is a real target or
+  # an absolute path; the namespaced equivalents added above stay in its place.
+  # Must run AFTER that target_link_libraries, or the entries it keeps are not in
+  # the list yet. CMake offers no way to remove an entry from a property, so each
+  # property is replaced wholesale.
+  omp_prune_unresolvable_link_entries(react_codegen_ObsidianMediaPlayerSpec)
 
   target_link_libraries(${CMAKE_PROJECT_NAME} react_codegen_ObsidianMediaPlayerSpec)
+
+  omp_assert_link_entries_resolvable(react_codegen_ObsidianMediaPlayerSpec)
+  omp_assert_link_entries_resolvable(${CMAKE_PROJECT_NAME})
 endif()
