@@ -67,10 +67,17 @@ class ObsidianVideoManager : SimpleViewManager<ObsidianVideoView>() {
       .put("onBuffering", MapBuilder.of("registrationName", "onBuffering"))
       .build() as MutableMap<String, Any>
 
+  // Command names here MUST match `supportedCommands` in
+  // src/specs/NativeObsidianVideo.ts exactly — codegen resolves a dispatched
+  // command by this string. They are `apply*` rather than `set*` because a
+  // command named `setRate` is emitted into the generated
+  // ObsidianVideoManagerInterface as `setRate(T, double)`, colliding with the
+  // setter generated for the `rate` prop and failing javac in the host app.
+  // See the spec for the full write-up.
   override fun getCommandsMap(): MutableMap<String, Int> =
     mutableMapOf(
       "play" to 1, "pause" to 2, "stop" to 3, "seek" to 4,
-      "setRate" to 5, "setVolume" to 6, "setMuted" to 7, "setResizeMode" to 8
+      "applyRate" to 5, "applyVolume" to 6, "applyMuted" to 7, "applyResizeMode" to 8
     )
 
   override fun receiveCommand(root: ObsidianVideoView, commandId: String?, args: ReadableArray?) {
@@ -79,10 +86,10 @@ class ObsidianVideoManager : SimpleViewManager<ObsidianVideoView>() {
       "pause" -> root.commandPause()
       "stop" -> root.commandStop()
       "seek" -> root.commandSeek(args?.getDouble(0) ?: 0.0)
-      "setRate" -> root.commandSetRate(args?.getDouble(0) ?: 1.0)
-      "setVolume" -> root.commandSetVolume(args?.getDouble(0) ?: 1.0)
-      "setMuted" -> root.commandSetMuted(args?.getBoolean(0) ?: false)
-      "setResizeMode" -> root.commandSetResizeMode(args?.getString(0) ?: "contain")
+      "applyRate" -> root.commandSetRate(args?.getDouble(0) ?: 1.0)
+      "applyVolume" -> root.commandSetVolume(args?.getDouble(0) ?: 1.0)
+      "applyMuted" -> root.commandSetMuted(args?.getBoolean(0) ?: false)
+      "applyResizeMode" -> root.commandSetResizeMode(args?.getString(0) ?: "contain")
     }
   }
 

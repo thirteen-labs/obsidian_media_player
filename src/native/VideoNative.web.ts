@@ -37,10 +37,10 @@ export const Commands = {
   pause: unavailable('pause'),
   stop: unavailable('stop'),
   seek: unavailable('seek'),
-  setRate: unavailable('setRate'),
-  setVolume: unavailable('setVolume'),
-  setMuted: unavailable('setMuted'),
-  setResizeMode: unavailable('setResizeMode'),
+  applyRate: unavailable('applyRate'),
+  applyVolume: unavailable('applyVolume'),
+  applyMuted: unavailable('applyMuted'),
+  applyResizeMode: unavailable('applyResizeMode'),
 };
 
 /**

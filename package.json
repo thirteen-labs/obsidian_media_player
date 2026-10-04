@@ -40,13 +40,14 @@
     "codegen": "react-native codegen --platform ios --project-root ./example/ios || true",
     "verify:android": "node scripts/verify-android-kotlin.mjs",
     "verify:android:host": "node scripts/ci/verify-android-host.mjs",
+    "verify:codegen": "node scripts/verify-codegen-commands.mjs",
     "verify:ios": "node scripts/verify-ios-codegen.mjs",
     "verify:ios:pod": "node scripts/ci/verify-ios-pod.mjs",
     "verify:ios:all": "npm run verify:ios && npm run verify:ios:pod",
     "verify:gates": "node scripts/ci/gate-self-test.mjs",
     "test": "jest",
     "bundle:web": "node scripts/bundle-web.mjs",
-    "verify": "npm run typecheck && npm run lint && npm test && npm run bundle:web && npm run verify:ios"
+    "verify": "npm run typecheck && npm run lint && npm run verify:codegen && npm test && npm run bundle:web && npm run verify:ios"
   },
   "keywords": [
     "react-native",

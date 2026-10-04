@@ -353,7 +353,13 @@ All public exports; native calls go via `src/native/*` compat layer (`TurboModul
 | `AudioNative` | `src/specs/NativeObsidianAudio.ts` (`ObsidianAudio`) | `load/ play/ pause/ stop/ seek/ setRate/ setVolume/ setMuted/ setLoop/ getCurrentState(): Promise<string(JSON PlaybackState)>` |
 | `MusicPlayerNative` | `src/specs/NativeObsidianMusicPlayer.ts` (`ObsidianMusicPlayer`) | `setQueue/addTracks/removeTrack/skipTo/next/previous/play/pause/stop/seek/setRate/setVolume/setMuted/setRepeatMode/setShuffle/setRemoteControls/setBackgroundEnabled/getCurrentQueue/getCurrentState` |
 | `CacheNative` | `src/specs/NativeObsidianCache.ts` (`ObsidianCache`) | `download/removeDownload/getDownloads/clearCache/getCacheSize` (all `Promise<string(JSON)>`) |
-| `ObsidianVideoNative` + `Commands` | `src/specs/NativeObsidianVideo.ts` (`ObsidianVideo`) | View props `sourceJson/paused/muted/volume/rate/resizeMode/repeat` + commands `play/pause/stop/seek/setRate/setVolume/setMuted/setResizeMode` |
+| `ObsidianVideoNative` + `Commands` | `src/specs/NativeObsidianVideo.ts` (`ObsidianVideo`) | View props `sourceJson/paused/muted/volume/rate/resizeMode/repeat` + commands `play/pause/stop/seek/applyRate/applyVolume/applyMuted/applyResizeMode` |
+
+The four `apply*` commands are named that way deliberately: codegen derives a
+prop's setter as `set` + PascalCase of the prop name, so a command named
+`setRate` collided with the `rate` prop and generated the same method twice —
+which fails `javac` in the *consuming app*, not here. The public `VideoHandle`
+API is unaffected: `ref.current.setRate(1.5)` still reads exactly as before.
 
 #### Types (`src/types.ts`)
 

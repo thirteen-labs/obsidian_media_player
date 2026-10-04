@@ -133,10 +133,10 @@ RCT_EXTERN_METHOD(play : (nonnull NSNumber *)reactTag)
 RCT_EXTERN_METHOD(pause : (nonnull NSNumber *)reactTag)
 RCT_EXTERN_METHOD(stop : (nonnull NSNumber *)reactTag)
 RCT_EXTERN_METHOD(seek : (nonnull NSNumber *)reactTag seconds : (nonnull NSNumber *)seconds)
-RCT_EXTERN_METHOD(setRate : (nonnull NSNumber *)reactTag rate : (nonnull NSNumber *)rate)
-RCT_EXTERN_METHOD(setVolume : (nonnull NSNumber *)reactTag volume : (nonnull NSNumber *)volume)
-RCT_EXTERN_METHOD(setMuted : (nonnull NSNumber *)reactTag muted : (BOOL)muted)
-RCT_EXTERN_METHOD(setResizeMode : (nonnull NSNumber *)reactTag mode : (nonnull NSString *)mode)
+RCT_EXTERN_METHOD(applyRate : (nonnull NSNumber *)reactTag rate : (nonnull NSNumber *)rate)
+RCT_EXTERN_METHOD(applyVolume : (nonnull NSNumber *)reactTag volume : (nonnull NSNumber *)volume)
+RCT_EXTERN_METHOD(applyMuted : (nonnull NSNumber *)reactTag muted : (BOOL)muted)
+RCT_EXTERN_METHOD(applyResizeMode : (nonnull NSNumber *)reactTag mode : (nonnull NSString *)mode)
 
 #pragma mark - Fabric interop allowlist
 

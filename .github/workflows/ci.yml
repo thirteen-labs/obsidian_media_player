@@ -1,7 +1,8 @@
 # Three gates, because `npm test` cannot see a single line of the ~1,100 lines
 # of Kotlin and ~1,100 of Swift in this module. FG-0.6.
 #
-#   js       typecheck + lint + test + web bundle   (FG-7.3, ~2 min)
+#   js       typecheck + lint + codegen command gate + test + web bundle
+#            (FG-7.3, ~2 min)
 #   android  Kotlin type-check matrix, then a real Gradle assembleRelease
 #            (FG-0.6 steps 1 and 4-5)
 #   ios      pod lib lint                          (FG-0.6 step 2)
@@ -46,7 +47,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: typecheck + lint + test + web bundle
+      - name: typecheck + lint + codegen gate + test + web bundle
         run: npm run verify
 
   # Proves the gates above are gates. Runs the fast probes only; the Gradle and

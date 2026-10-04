@@ -95,10 +95,15 @@ export const Video = forwardRef<VideoHandle, VideoProps>(function Video(
       pause: () => VideoCommands.pause(innerRef.current),
       stop: () => VideoCommands.stop(innerRef.current),
       seek: (seconds) => VideoCommands.seek(innerRef.current, seconds),
-      setRate: (r) => VideoCommands.setRate(innerRef.current, r),
-      setVolume: (v) => VideoCommands.setVolume(innerRef.current, v),
-      setMuted: (m) => VideoCommands.setMuted(innerRef.current, m),
-      setResizeMode: (mode) => VideoCommands.setResizeMode(innerRef.current, mode),
+      // `apply*` is the native command name, not the public handle name. The
+      // handle keeps the `set*` spelling it has always had; only the dispatch
+      // target was renamed, because a codegen command named `setRate` collides
+      // with the `rate` prop in the generated Java interface. See
+      // src/specs/NativeObsidianVideo.ts.
+      setRate: (r) => VideoCommands.applyRate(innerRef.current, r),
+      setVolume: (v) => VideoCommands.applyVolume(innerRef.current, v),
+      setMuted: (m) => VideoCommands.applyMuted(innerRef.current, m),
+      setResizeMode: (mode) => VideoCommands.applyResizeMode(innerRef.current, mode),
       getState: () => stateRef.current,
       flush,
     }),

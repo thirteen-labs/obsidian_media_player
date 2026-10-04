@@ -21,10 +21,10 @@ jest.mock('../src/native/VideoNative', () => {
     pause: jest.fn(),
     stop: jest.fn(),
     seek: jest.fn(),
-    setRate: jest.fn(),
-    setVolume: jest.fn(),
-    setMuted: jest.fn(),
-    setResizeMode: jest.fn(),
+    applyRate: jest.fn(),
+    applyVolume: jest.fn(),
+    applyMuted: jest.fn(),
+    applyResizeMode: jest.fn(),
   };
 
   let latest: any = null;
@@ -175,8 +175,10 @@ describe('Video commands', () => {
     // (so it is null). Asserting on it with `expect.anything()` would fail,
     // since that matcher rejects null and undefined — check the payload only.
     expect(native.VideoCommands.seek.mock.calls[0][1]).toBe(42);
-    expect(native.VideoCommands.setVolume.mock.calls[0][1]).toBe(0.25);
-    expect(native.VideoCommands.setResizeMode.mock.calls[0][1]).toBe('cover');
+    // The handle's public API is still `setVolume` / `setResizeMode`; only the
+    // native command it dispatches to is named `apply*`.
+    expect(native.VideoCommands.applyVolume.mock.calls[0][1]).toBe(0.25);
+    expect(native.VideoCommands.applyResizeMode.mock.calls[0][1]).toBe('cover');
     h.unmount();
   });
 
