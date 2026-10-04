@@ -414,14 +414,14 @@ __tests__/            # 14 suites: Video, Video.web music queue, MusicPlayer, Au
 
 ## Changelog
 
-> **Nothing has been published since `0.1.5`.** Everything below `0.2.0` was written
-> during the audit work and has never reached npm. See [`progress.md`](./progress.md)
+> **Nothing has been published since `0.2.0`.** Everything from `0.3.0` onward was
+> written during the audit work and has never reached npm. See [`progress.md`](./progress.md)
 > for per-item status — including what is **not** verified — and
 > [`to-be-done.md`](./to-be-done.md) for the plan and the reasoning behind each fix.
 
 ### 0.5.0 - Web parity, iOS architecture, Android media session, and gates that were never there
 
-> **This consolidates everything since `0.1.5`.** `0.3.0`, `0.3.1` and `0.4.0`
+> **This consolidates everything since `0.2.0`.** `0.3.0`, `0.3.1` and `0.4.0`
 > were written during the work but never published, so they never existed for a
 > consumer. They are folded into this single entry rather than shipped as a chain
 > of versions nobody ever saw. Per-item status, including what is *not* verified,

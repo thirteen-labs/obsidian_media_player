@@ -37,7 +37,7 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -132,6 +132,52 @@ const prefix = useBundle ? ['exec', 'pod'] : [];
  * The old flag was still doing its other job — making the trunk-unresolvable
  * pods visible to the resolver — while quietly breaking every pod whose sources
  * live behind a `prepare_command`.
+ *
+ * ## Why two podspecs are excluded from the glob
+ *
+ * The glob covers 84 podspecs and every one of them becomes a `pod` declaration
+ * in the lint Podfile. CocoaPods validates each declared pod whether or not
+ * anything depends on it, and two of RN's are not dependency-shaped at all:
+ *
+ *   node_modules/react-native/React-Core-prebuilt.podspec
+ *   node_modules/react-native/third-party-podspecs/ReactNativeDependencies.podspec
+ *
+ * Both are opt-in *distribution* podspecs — they install a prebuilt xcframework
+ * from a Maven tarball instead of building RN from source. `pod 'React-Core-
+ * prebuilt'` is declared in only two places in react_native_pods.rb (lines 164
+ * and 259), both guarded by `ReactNativeCoreUtils.build_rncore_from_source()`
+ * being false, i.e. by `RCT_USE_PREBUILT_RNCORE=1` *and* the release artifacts
+ * existing on Maven. A library podspec calls `install_modules_dependencies`,
+ * which adds `React-Core` (line 111 of cocoapods/new_architecture.rb) and never
+ * the prebuilt variant. So this gate never needed either file.
+ *
+ * Declared anyway, they fail validation immediately:
+ *
+ *   ERROR | [iOS] unknown: The `React-Core-prebuilt` pod failed to validate due
+ *   to 1 error:
+ *   ERROR | attributes: Missing required attribute `source`.
+ *
+ * Not because the podspec is malformed. It assigns
+ *
+ *   s.source = ReactNativeCoreUtils.resolve_podspec_source()
+ *
+ * and that helper (cocoapods/rncore.rb:88) falls off the end returning **nil**
+ * unless `RCT_TESTONLY_RNCORE_TARBALL_PATH` is set or `RCT_USE_PREBUILT_RNCORE`
+ * is "1" — see the bare `if` at line 95 with no `else`. This gate sets
+ * `RCT_NEW_ARCH_ENABLED=1` and nothing else, so `s.source` is nil and the
+ * required-attribute linter reports it as missing.
+ *
+ * `ReactNativeDependencies.podspec` has the identical shape via
+ * `ReactNativeDependenciesUtils.resolve_podspec_source()`
+ * (cocoapods/rndependencies.rb:71), which returns nil unless `RCT_USE_RN_DEP`
+ * or `RCT_USE_LOCAL_RN_DEP` is set. Excluding only the first would move this
+ * error to the second rather than fix it.
+ *
+ * They are excluded by name and logged, not deleted and not given a fake
+ * `source`: they are correct podspecs being read outside the mode that
+ * configures them. New RN podspecs default to *included*, which is the safe
+ * direction — an over-broad glob costs a lint failure that names the file, while
+ * an under-broad one silently loses a transitive dependency.
  */
 const RN_DIR = dirname(
   execFileSync('node', ['--print', "require.resolve('react-native/package.json')"], {
@@ -139,6 +185,13 @@ const RN_DIR = dirname(
     encoding: 'utf8',
   }).trim(),
 );
+
+/**
+ * Podspecs that configure themselves from an env var this gate does not set.
+ * See the note above — adding to this list is safe; removing from it re-opens
+ * the "Missing required attribute `source`" failure.
+ */
+const NOT_PODS = new Set(['React-Core-prebuilt', 'ReactNativeDependencies']);
 
 function localPodspecs(dir, found = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -149,15 +202,25 @@ function localPodspecs(dir, found = []) {
   return found;
 }
 
-const rnPodspecs = localPodspecs(RN_DIR);
-if (rnPodspecs.length === 0) {
+/** `React.podspec` -> `React`; matches CocoaPods' own `File.basename(p, '.*')`. */
+const podNameOf = (p) => basename(p, '.podspec');
+
+const allRnPodspecs = localPodspecs(RN_DIR);
+if (allRnPodspecs.length === 0) {
   console.error(
     `Found no .podspec files under ${RN_DIR}.\n` +
       '  `npm ci` has to run before this gate: see .github/workflows/ci.yml.',
   );
   process.exit(2);
 }
-console.log(`[pod] ${rnPodspecs.length} local React Native podspecs from ${RN_DIR}`);
+
+const rnPodspecs = allRnPodspecs.filter((p) => !NOT_PODS.has(podNameOf(p)));
+const excluded = allRnPodspecs.filter((p) => NOT_PODS.has(podNameOf(p)));
+
+console.log(
+  `[pod] ${rnPodspecs.length} local React Native podspecs from ${RN_DIR}` +
+    (excluded.length ? ` (${excluded.length} excluded: ${excluded.map(podNameOf).join(', ')})` : ''),
+);
 
 // `--external-podspecs` arrived in CocoaPods 1.7.0.beta.3, so this is a floor
 // rather than a real constraint. It is still worth checking, because the
@@ -235,11 +298,19 @@ if (r.status !== 0) {
     '[pod] lib lint failed. This is the only thing in the repo that has ever\n' +
       '      compiled the Swift, so treat it as a real finding rather than a\n' +
       '      flaky job. The lint is deterministic; re-running it will not help.\n\n' +
-      '      Read the error above before anything else. The one shape that is\n' +
-      '      not about this repo is a shell error from a third-party podspec —\n' +
-      '      `mv src double-conversion` failing is DoubleConversion.podspec\'s\n' +
-      '      prepare_command, and means the pod was installed from a directory\n' +
-      '      rather than from its s.source (see --external-podspecs above).\n\n' +
+      '      Read the error above before anything else. Two shapes are about\n' +
+      '      React Native rather than this repo:\n\n' +
+      '        "The `<pod>` pod failed to validate" / "Missing required\n' +
+      '         attribute `source`"\n' +
+      '          A pod whose s.source comes from resolve_podspec_source(). The two\n' +
+      '          prebuilt-distribution podspecs are excluded above; if the name\n' +
+      '          is a different one, a new RN release added a third. Add it to\n' +
+      '          NOT_PODS and note why in the comment there.\n\n' +
+      '        a shell error from a third-party podspec\n' +
+      '          `mv src double-conversion` is DoubleConversion.podspec\'s\n' +
+      '          prepare_command and means that pod was installed from a directory\n' +
+      '          rather than from its s.source, i.e. via :path and not :podspec.\n' +
+      '          That was the old --include-podspecs; see the note above.\n\n' +
       '      For compiler output, add --verbose.',
   );
   process.exit(r.status ?? 1);

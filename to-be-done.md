@@ -89,7 +89,7 @@ and for the five tests that turned out to be vacuous.
 
 > **All of the work below shipped in a single `0.5.0` release.** Intermediate
 > versions `0.3.0` / `0.3.1` / `0.4.0` were used while writing these sections but
-> never published - npm's last version is `0.1.5` - so the "shipped as `0.3.0`"
+> never published - npm's last version is `0.2.0` - so the "shipped as `0.3.0`"
 > phrasing elsewhere in this document means "landed during the `0.3.0` work
 > session", not a version a consumer ever saw. Read those as history, not as a
 > release history.
@@ -2699,7 +2699,7 @@ Wave 7  ──▶ cross-cutting          not started
 Per-item status, evidence and the list of what is *not* verified is in
 [`progress.md`](./progress.md). Everything through Wave 6 minus FG-5.1–5.5
 shipped together in `0.5.0`; there is no separate per-wave version, because
-nothing was published between `0.1.5` and now.
+nothing was published between `0.2.0` and now.
 
 **Parallelisable:** Wave 2 (web) and Wave 4 (Android) share no files — they can
 proceed in parallel once Waves 0 and 1 land. Wave 3 is independent of both but

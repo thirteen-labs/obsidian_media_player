@@ -1,6 +1,6 @@
 # Progress — `obsidian-media-player`
 
-**Status at `0.5.0`** (unreleased — the last published version is `0.1.5`).
+**Status at `0.5.0`** (unreleased — the last published version is `0.2.0`).
 
 This is the *status* document. [`to-be-done.md`](./to-be-done.md) is the *plan*:
 why each fix was made, what the code looked like before, and where the reasoning
@@ -281,7 +281,7 @@ Ordered by how likely they are to bite a consumer.
 
 In the order `to-be-done.md` puts them.
 
-1. **Commit.** Everything is still uncommitted against a `0.1.5` baseline, and
+1. **Commit.** Everything is still uncommitted against a `0.2.0` baseline, and
    `verify:gates` (now 6/6) needs a clean tree to run unattended in CI.
 2. **Switch on CI and read the output.** `verify:android:host` and
    `verify:ios:pod` are written and have never executed. FG-3.1 and FG-3.2 close
