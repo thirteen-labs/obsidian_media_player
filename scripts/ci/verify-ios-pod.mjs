@@ -178,6 +178,24 @@ const prefix = useBundle ? ['exec', 'pod'] : [];
  * configures them. New RN podspecs default to *included*, which is the safe
  * direction — an over-broad glob costs a lint failure that names the file, while
  * an under-broad one silently loses a transitive dependency.
+ *
+ * Nothing in the dependency graph asks for them, which is the part worth being
+ * sure about, because the failure looks exactly like it does. The one place a
+ * pod can acquire the prebuilt dependency is `add_rncore_dependency`
+ * (cocoapods/rncore.rb:21), which `install_modules_dependencies` calls last
+ * (cocoapods/new_architecture.rb:144):
+ *
+ *   def add_rncore_dependency(s)
+ *       if !ReactNativeCoreUtils.build_rncore_from_source()
+ *           s.dependency "React-Core-prebuilt"
+ *
+ * and `build_rncore_from_source` returns a class variable initialised to `true`
+ * (rncore.rb:33) which only `setup_rncore` clears — and only when
+ * `RCT_USE_PREBUILT_RNCORE=1` *and* the release artifact exists on Maven. So
+ * with that variable unset the edge is never created, which is also why the
+ * failure text ("…failed to validate due to 1 error: attributes: Missing
+ * required attribute `source`") is a *validation* error on a declared pod and
+ * not a resolution error. Nothing pulled it in: this gate declared it.
  */
 const RN_DIR = dirname(
   execFileSync('node', ['--print', "require.resolve('react-native/package.json')"], {
@@ -189,7 +207,8 @@ const RN_DIR = dirname(
 /**
  * Podspecs that configure themselves from an env var this gate does not set.
  * See the note above — adding to this list is safe; removing from it re-opens
- * the "Missing required attribute `source`" failure.
+ * the "Missing required attribute `source`" failure. It has to be *read* by
+ * `externalPodspecPattern` below to have any effect at all.
  */
 const NOT_PODS = new Set(['React-Core-prebuilt', 'ReactNativeDependencies']);
 
@@ -214,13 +233,197 @@ if (allRnPodspecs.length === 0) {
   process.exit(2);
 }
 
-const rnPodspecs = allRnPodspecs.filter((p) => !NOT_PODS.has(podNameOf(p)));
+const included = allRnPodspecs.filter((p) => !NOT_PODS.has(podNameOf(p)));
 const excluded = allRnPodspecs.filter((p) => NOT_PODS.has(podNameOf(p)));
 
+if (included.length === 0) {
+  console.error(
+    `Every podspec under ${RN_DIR} is in NOT_PODS.\n` +
+      '  That would leave --external-podspecs empty and fail resolution for the\n' +
+      '  whole tree; NOT_PODS is meant for opt-in distribution podspecs only.',
+  );
+  process.exit(2);
+}
+
 console.log(
-  `[pod] ${rnPodspecs.length} local React Native podspecs from ${RN_DIR}` +
+  `[pod] ${included.length} local React Native podspecs from ${RN_DIR}` +
     (excluded.length ? ` (${excluded.length} excluded: ${excluded.map(podNameOf).join(', ')})` : ''),
 );
+
+/* ---------------------------------------------------------------------------
+ * Getting the exclusion onto the command line
+ *
+ * `--external-podspecs` is one string that CocoaPods hands straight to Ruby and
+ * expands itself, and *every* match becomes a pod in the lint Podfile — which is
+ * why a podspec with a nil `s.source` fails validation even when nothing depends
+ * on it. `validator.rb#podfile_from_spec`, verbatim:
+ *
+ *   additional_podspec_pods = external_podspecs ? Dir.glob(external_podspecs) : []
+ *   ...
+ *   additional_podspec_pods.each { |p| pod File.basename(p, '.*'), :podspec => p }
+ *
+ * So NOT_PODS only has an effect if it shapes that string. `Dir.glob` is
+ * fnmatch, not a regex: `**`, `*`, `?`, `[…]`, `{a,b}` — and no `!(…)`. That is
+ * still enough for "every podspec except these", because a subtree with no
+ * excluded podspec in it collapses to a single `**` pattern:
+ *
+ *   1. no excluded podspec anywhere under a directory -> one recursive pattern
+ *      for that whole subtree;
+ *   2. otherwise -> the directory's own files (individually named, since a
+ *      `<dir>/*.podspec` would sweep the exclusion back in) plus a recursive call
+ *      per immediate subdirectory
+ *
+ * With RN 0.82's layout that is 13 alternatives, because exactly two directories
+ * are dirty: react-native's root and third-party-podspecs.
+ *
+ * ## The two forms cannot overlap
+ *
+ * A `**` pattern is only ever emitted for a directory with no excluded podspec
+ * anywhere beneath it, and a directory's own pattern is never recursive. So
+ * every podspec is matched exactly once — which matters, because two matching
+ * alternatives would declare the same pod twice and CocoaPods rejects that.
+ *
+ * ## This used to be a filter that filtered nothing
+ *
+ * The earlier version built this list, logged `82 podspecs (2 excluded: …)`, and
+ * then passed a bare recursive glob rooted at RN's package root — all 84 files,
+ * unfiltered. The exclusion reached the log and nothing else, so CocoaPods
+ * declared every podspec and validated React-Core-prebuilt anyway, which reads
+ * exactly like "something in the dependency graph is still pulling it in".
+ * Nothing was. The guard below exists so that a plausible-looking log cannot
+ * hide that again.
+ * ------------------------------------------------------------------------- */
+
+const RN_POSIX = RN_DIR.replace(/\\/g, '/');
+
+/** `p` relative to RN's package root, with `/` separators. */
+const relOf = (p) => p.slice(RN_DIR.length + 1).replace(/\\/g, '/');
+
+/** `Libraries/Text/React-RCTText.podspec` -> `Libraries/Text`; `''` for RN's root. */
+const parentOf = (relDir) => {
+  const i = relDir.lastIndexOf('/');
+  return i < 0 ? '' : relDir.slice(0, i);
+};
+const relDirOf = (p) => parentOf(relOf(p));
+
+/** Podspec basenames, grouped by the directory holding them. */
+function groupByDir(files) {
+  const dirs = new Map();
+  for (const p of files) {
+    const d = relDirOf(p);
+    if (!dirs.has(d)) dirs.set(d, []);
+    dirs.get(d).push(basename(p));
+  }
+  return dirs;
+}
+
+const allByDir = groupByDir(allRnPodspecs);
+const includedByDir = groupByDir(included);
+
+/** Is there an excluded podspec at `d` or anywhere below it? */
+function subtreeHasExclusion(d) {
+  const below = d === '' ? '' : `${d}/`;
+  return excluded.some((p) => {
+    const dir = relDirOf(p);
+    return dir === d || dir.startsWith(below);
+  });
+}
+
+/**
+ * Immediate subdirectories of `d` that have at least one podspec at or below
+ * them, derived from the *paths* rather than from the keys of `allByDir`.
+ *
+ * The two are not the same set: `Libraries`, `ReactApple` and `sdks` hold no
+ * podspec of their own — every podspec under them is one level deeper — so they
+ * are absent from `allByDir` while their subtrees are very much present. Walking
+ * the keys instead skips those subtrees entirely, and the lint then fails to
+ * resolve `RCTRequired`, `hermes-engine` and friends.
+ */
+function childDirs(d) {
+  const base = d === '' ? '' : `${d}/`;
+  const kids = new Set();
+  for (const k of allByDir.keys()) {
+    if (!k.startsWith(base)) continue;
+    const rest = k.slice(base.length);
+    if (rest === '') continue; // k is `d` itself
+    const i = rest.indexOf('/');
+    kids.add(i < 0 ? rest : rest.slice(0, i));
+  }
+  return kids;
+}
+
+const patternsByDir = new Map();
+
+/**
+ * Glob alternatives covering `d`'s own podspecs and everything beneath it, each
+ * tagged with the directory that produced it so the check below can attribute a
+ * match back to a rule rather than to "the pattern list".
+ */
+function patternsFor(d) {
+  const memo = patternsByDir.get(d);
+  if (memo) return memo;
+  const out = [];
+  patternsByDir.set(d, out); // set before recursing: the walk is a tree, this is belt-and-braces
+
+  const prefix = `${RN_POSIX}${d ? `/${d}/` : '/'}`;
+  if (!subtreeHasExclusion(d)) {
+    out.push({ dir: d, pattern: `${prefix}**/*.podspec` });
+    return out;
+  }
+
+  const mine = includedByDir.get(d) ?? [];
+  if (mine.length > 0) {
+    if (mine.length === (allByDir.get(d) ?? []).length) {
+      out.push({ dir: d, pattern: `${prefix}*.podspec` });
+    } else {
+      for (const f of mine) out.push({ dir: d, pattern: `${prefix}${f}` });
+    }
+  }
+  for (const child of childDirs(d)) out.push(...patternsFor(child));
+  return out;
+}
+
+const walked = patternsFor('');
+
+/**
+ * A recursive pattern covers a whole subtree, so it is only ever emitted for a
+ * directory with no excluded podspec anywhere beneath it. That is the whole
+ * reason the exclusion works, and it is invisible in the assembled glob — so it
+ * is asserted here rather than left to be re-derived by whoever reads this next.
+ * Someone who "simplifies" the walk above into one pattern rooted at RN's package
+ * root gets this error instead of a lint failure naming a pod they excluded on
+ * purpose.
+ */
+const recursiveDirs = walked.filter((w) => w.pattern.endsWith('**/*.podspec')).map((w) => w.dir);
+const sweptIn = excluded.filter((p) => {
+  const d = relDirOf(p);
+  return recursiveDirs.some((r) => d === r || d.startsWith(r === '' ? '' : `${r}/`));
+});
+if (sweptIn.length > 0) {
+  console.error(
+    'NOT_PODS is not reaching --external-podspecs:\n' +
+      sweptIn.map((p) => `  ${relOf(p)} is inside the subtree of a recursive pattern\n`).join('') +
+      '  A recursive pattern must only be emitted for a directory that has no\n' +
+      '  excluded podspec at or below it.',
+  );
+  process.exit(2);
+}
+
+// These names are interpolated into a brace group, where `,{}` are separators and
+// `*?[]` are wildcards. RN's pod names are identifiers, so this never fires — but
+// a rename upstream should fail here, not by silently matching fewer files than
+// the log just promised.
+const unquotable = allRnPodspecs.find((p) => /[*?[\]{},]/.test(basename(p)));
+if (unquotable) {
+  console.error(
+    `Cannot pass ${relOf(unquotable)} through a glob: its name contains a character\n` +
+      '  `*?[]{},` that the brace group would interpret.',
+  );
+  process.exit(2);
+}
+
+const EXTERNAL_PODSPECS =
+  walked.length === 1 ? walked[0].pattern : `{${walked.map((w) => w.pattern).join(',')}}`;
 
 // `--external-podspecs` arrived in CocoaPods 1.7.0.beta.3, so this is a floor
 // rather than a real constraint. It is still worth checking, because the
@@ -262,14 +465,16 @@ const args = [
   // only the last value, and the lint would fail with the same "Unable to find
   // a specification" error this flag exists to fix.
   //
-  // The glob is anchored at RN's package root and covers the whole tree because
-  // the dependency graph is transitive: RCTFabric pulls RCT-Folly, glog, Yoga,
-  // React-jsi, hermes-engine, React-Fabric and more, and a hand-kept list of
-  // "the ones we need" is silently short on the next RN version.
+  // The value covers the whole tree, because the dependency graph is transitive:
+  // RCTFabric pulls RCT-Folly, glog, Yoga, React-jsi, hermes-engine,
+  // React-Fabric and more, and a hand-kept list of "the ones we need" is silently
+  // short on the next RN version. It is a brace group rather than a bare
+  // `**/*.podspec` so that NOT_PODS actually reaches CocoaPods — see the note
+  // above EXTERNAL_PODSPECS.
   //
   // Forward slashes are fine on Windows too — the gate is macOS-only, but
   // Dir.glob wants one separator.
-  `--external-podspecs=${RN_DIR.replace(/\\/g, '/')}/**/*.podspec`,
+  `--external-podspecs=${EXTERNAL_PODSPECS}`,
   ...(process.argv.includes('--verbose') ? ['--verbose'] : []),
 ];
 
@@ -279,10 +484,31 @@ console.log(`[pod] $ ${pod} ${args.join(' ')}`);
 // lint has to supply it or it fails on the guard before it ever reaches the
 // compiler — which would be a green-looking pass for the wrong reason on a
 // machine that happened to have the variable set.
+const env = { ...process.env, RCT_NEW_ARCH_ENABLED: '1' };
+
+// Pin the two distribution switches off, and delete the TESTONLY ones outright.
+//
+// "0" rather than unset is the documented no-op for both: rncore.rb:65 and
+// rndependencies.rb:122 compare against the string "1", and the truthiness
+// checks that only produce a log line are harmless. Leaving them at whatever the
+// shell exported means a developer with `RCT_USE_PREBUILT_RNCORE=1` in their
+// profile would get a lint that silently switches RN over to the prebuilt
+// distribution — the exact two pods this gate exists to keep out, re-entering
+// through the dependency graph instead of the glob.
+//
+// The TESTONLY/local ones must be *absent*, not empty: Ruby treats `ENV['X']` ==
+// "" as truthy, so `RCT_TESTONLY_RNCORE_TARBALL_PATH=""` would take the
+// local-tarball branch of resolve_podspec_source() and abort the run outright.
+for (const v of ['RCT_TESTONLY_RNCORE_TARBALL_PATH', 'RCT_TESTONLY_RNCORE_VERSION', 'RCT_USE_LOCAL_RN_DEP']) {
+  delete env[v];
+}
+env.RCT_USE_PREBUILT_RNCORE = '0';
+env.RCT_USE_RN_DEP = '0';
+
 const r = spawnSync(pod, args, {
   stdio: 'inherit',
   cwd: ROOT,
-  env: { ...process.env, RCT_NEW_ARCH_ENABLED: '1' },
+  env,
 });
 if (r.error) {
   console.error(`[pod] could not run: ${r.error.message}`);
@@ -303,9 +529,10 @@ if (r.status !== 0) {
       '        "The `<pod>` pod failed to validate" / "Missing required\n' +
       '         attribute `source`"\n' +
       '          A pod whose s.source comes from resolve_podspec_source(). The two\n' +
-      '          prebuilt-distribution podspecs are excluded above; if the name\n' +
-      '          is a different one, a new RN release added a third. Add it to\n' +
-      '          NOT_PODS and note why in the comment there.\n\n' +
+      '          prebuilt-distribution podspecs are excluded, and the exclusion is\n' +
+      '          built into the --external-podspecs value rather than logged, so\n' +
+      '          this can only mean a new name. Add it to NOT_PODS and note why in\n' +
+      '          the comment there.\n\n' +
       '        a shell error from a third-party podspec\n' +
       '          `mv src double-conversion` is DoubleConversion.podspec\'s\n' +
       '          prepare_command and means that pod was installed from a directory\n' +

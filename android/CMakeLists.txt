@@ -238,6 +238,93 @@ set(CODEGEN_JNI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/build/generated/source/codegen/j
 # "C:\Users\<First Last>\..." checkout), which would otherwise split into
 # multiple arguments and produce a confusing "not an existing directory" error.
 if(EXISTS "${CODEGEN_JNI_DIR}/CMakeLists.txt")
+  # THE GENERATED CMakeLists CALLS A REACT NATIVE MACRO THAT NOTHING HERE DEFINES.
+  #
+  # @react-native/codegen's GenerateModuleJniH.js emits, as the last statement of
+  # the file it writes to jni/CMakeLists.txt (line 79 of the template, which lands
+  # on line 28 of the generated file):
+  #
+  #   target_compile_reactnative_options(react_codegen_<Name> PRIVATE)
+  #
+  # That macro has exactly one definition in React Native:
+  #
+  #   ReactCommon/cmake-utils/react-native-flags.cmake:29
+  #     function(target_compile_reactnative_options target_name scope)
+  #
+  # and exactly one place that includes it:
+  #
+  #   ReactAndroid/cmake-utils/ReactNative-application.cmake:25
+  #     include(${REACT_COMMON_DIR}/cmake-utils/react-native-flags.cmake)
+  #
+  # ReactNative-application.cmake is the *app target* helper. A stock RN app gets
+  # the macro because its android/app/src/main/jni/CMakeLists.txt includes that
+  # file. This module does not and should not: it is a com.android.library, and
+  # because it declares its own
+  #
+  #   externalNativeBuild { cmake { path "CMakeLists.txt" } }
+  #
+  # AGP configures it as a SEPARATE CMake project with its own scope. The app's
+  # include() is not inherited across that boundary, so the macro the generated
+  # file needs simply is not defined here, and configure dies before the compiler
+  # ever runs:
+  #
+  #   CMake Error at build/generated/source/codegen/jni/CMakeLists.txt:28:
+  #   Unknown CMake command "target_compile_reactnative_options".
+  #
+  # This is latent locally and fatal in an app, which is why it survived. The
+  # add_subdirectory below is guarded on the codegen output existing, and codegen
+  # only produces it for this module during an app build (see the `react { }`
+  # block in ../build.gradle) — so `gradle :obsidian-media-player:assemble` in
+  # this repo skips the whole branch and passes, while every consuming app with
+  # the New Architecture enabled takes it.
+  #
+  # This is NOT an RN version mismatch, which is the natural reading of that
+  # error and worth stating plainly: both halves ship in the same react-native.
+  # The caller is @react-native/codegen and the callee is ReactCommon/, and they
+  # are pinned together; nothing here is asking for a newer macro than the RN on
+  # the machine provides.
+  #
+  # Include is skipped when the macro already exists, so an app that pulls RN's
+  # application-level helper in first is unaffected, and so are future RN versions
+  # that fold this into some other file we are already including.
+  if(NOT COMMAND target_compile_reactnative_options)
+    # Resolved through `node`, like ObsidianMediaPlayer.podspec does on iOS, and
+    # for the same reason: react-native is a *sibling* of this library in a
+    # consuming app, not a child of it, so a relative ../node_modules path only
+    # works when the module happens to be built from its own checkout.
+    # require.resolve walks up the node_modules chain from here and finds both
+    # layouts.
+    execute_process(
+      COMMAND node --print "require.resolve('react-native/package.json')"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      OUTPUT_VARIABLE omp_react_native_package_json
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+    )
+    if(omp_react_native_package_json)
+      get_filename_component(omp_react_native_dir "${omp_react_native_package_json}" DIRECTORY)
+      set(omp_rn_flags "${omp_react_native_dir}/ReactCommon/cmake-utils/react-native-flags.cmake")
+      # EXISTS, because the peer range is `react-native >=0.74.0` and this file
+      # is not in every version of React Native. Including a path that does not
+      # exist is itself a fatal CMake error, which would trade one configure
+      # failure for another on an older RN. The COMMAND check below then reports
+      # the real problem in those versions.
+      if(EXISTS "${omp_rn_flags}")
+        include("${omp_rn_flags}")
+      endif()
+    endif()
+  endif()
+  if(NOT COMMAND target_compile_reactnative_options)
+    message(FATAL_ERROR
+      "React Native's target_compile_reactnative_options is not defined, but "
+      "${CODEGEN_JNI_DIR}/CMakeLists.txt calls it.\n"
+      "It is defined in react-native/ReactCommon/cmake-utils/react-native-flags.cmake, "
+      "which this file includes when `node --print require.resolve(...)` finds react-native.\n"
+      "Check that node is on PATH for this build (node --version) and that react-native "
+      "is installed next to or above this module (npm ls react-native)."
+    )
+  endif()
+
   add_subdirectory("${CODEGEN_JNI_DIR}" codegen_ObsidianMediaPlayerSpec_build)
 
   # THE GENERATED CMakeLists LINKS ITS PREFAB DEPENDENCIES BY *BARE* NAME.
