@@ -414,10 +414,37 @@ __tests__/            # 14 suites: Video, Video.web music queue, MusicPlayer, Au
 
 ## Changelog
 
-> **Nothing has been published since `0.2.0`.** Everything from `0.3.0` onward was
-> written during the audit work and has never reached npm. See [`progress.md`](./progress.md)
+> `0.3.0`, `0.3.1` and `0.4.0` were written during the audit work and never
+> released, so they never existed for a consumer; everything in them is folded
+> into `0.5.0`. See [`progress.md`](./progress.md)
 > for per-item status — including what is **not** verified — and
 > [`to-be-done.md`](./to-be-done.md) for the plan and the reasoning behind each fix.
+
+### 0.5.1 - Android CMake configure fix
+
+Two build fixes. Neither changes runtime behaviour, and there is no migration.
+
+- **Android: this module no longer breaks a consuming app's CMake configure.**
+  `android/CMakeLists.txt` adds React Native's generated codegen CMakeLists as a
+  subdirectory, and that generated file calls
+  `target_compile_reactnative_options`. The only definition of it is
+  `ReactCommon/cmake-utils/react-native-flags.cmake`, which the stock React Native
+  app template gets via `ReactNative-application.cmake` — but this module is a
+  `com.android.library` with its own `externalNativeBuild`, so AGP configures it as a
+  separate CMake project and the app's `include()` does not apply. The file is now
+  included (resolved through `node`, so a sibling `react-native` in a consuming app is
+  found) whenever the macro is not already defined. Apps on the New Architecture failed
+  at configure with `Unknown CMake command "target_compile_reactnative_options"`.
+  Building this module standalone did *not* fail, because codegen only generates that
+  directory during an app build — which is why this survived `npm run verify:android`.
+  Note this also applies React Native's `-Werror` to the generated codegen target, which
+  previously received no flags at all.
+- **iOS: `npm run verify:ios:pod` now excludes what it says it excludes.** The gate
+  filtered `React-Core-prebuilt` and `ReactNativeDependencies` out of the podspecs it
+  hands to `pod lib lint`, then passed the unfiltered glob regardless, so both were
+  declared, validated, and failed with `Missing required attribute source`. The
+  exclusion is now built into the `--external-podspecs` value it passes. Repo tooling
+  only — no consumer-visible change.
 
 ### 0.5.0 - Web parity, iOS architecture, Android media session, and gates that were never there
 

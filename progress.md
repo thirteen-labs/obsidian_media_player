@@ -1,6 +1,6 @@
 # Progress — `obsidian-media-player`
 
-**Status at `0.5.0`** (unreleased — the last published version is `0.2.0`).
+**Status at `0.5.1`** (one patch on the released `0.5.0`).
 
 This is the *status* document. [`to-be-done.md`](./to-be-done.md) is the *plan*:
 why each fix was made, what the code looked like before, and where the reasoning
